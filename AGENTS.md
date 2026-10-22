@@ -77,6 +77,8 @@ to keep/preserve the escrowed funds).
   and full on-chain verification.
 - `package.json`, `.env.example` — root driver scripts and key/address template.
 - `README.md` — the human-facing explanation, deployment and trust model.
+- `information_needed.md` — steward review responses: each request, its fix, the
+  regression tests, the verification snapshot and the deployment proof.
 - `frontend/` — Next.js 16 + React 19 + Tailwind v4 app (Phase 3).
   - `src/lib/{genlayer,eip6963,observa,format,utils}.ts` — client, wallet
     discovery, typed contract surface, formatting.
@@ -432,6 +434,8 @@ results). Keep it short but concrete.
     (deal `s4`, stops at `APPEALED`); browser E2E -> **21 passed** (deal `s5`).
     The new contract now holds `s1`/`s2` (demo) plus `s3..s5` (guard-test
     `APPEALED` artifacts).
+  - Added `information_needed.md` (steward requests → fixes → tests → commands)
+    and pushed main `5b437c2 Bind attestation reports and close appeal gaps`.
   - Next: update the Vercel address, rebuild after that env change, rerun the
     deployed smoke, and update the portal contract link/How-to. Use the new
     contract (`s1`/`s2` are the finished demo deals) and note the 60s appeal
