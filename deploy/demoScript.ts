@@ -6,8 +6,15 @@
  * itself is deterministic integer arithmetic, so it does not need a model.
  *
  * It creates an escrow, starts the window, probes slot 0, waits out a short SLA
- * window, settles, files a bonded appeal, re-derives, finalizes, and prints the
- * payout ledger. A second deal demonstrates the pre-start cancel/refund path.
+ * window, settles, files a bonded appeal, waits for the evidence deadline,
+ * re-derives, finalizes, and prints the payout ledger. A second deal demonstrates
+ * the pre-start cancel/refund path.
+ *
+ * A fresh demo deploy shortens only APPEAL_WINDOW_SEC to 30s so the full lifecycle
+ * fits in a demo; production keeps the one-hour window. When attaching to an
+ * existing contract (`--address`), the demo never bypasses that contract's real
+ * deadline: if it is longer than a minute, the run stops after proving that an
+ * immediate resolve is rejected.
  *
  * Usage:
  *   node deploy/demoScript.ts                         # deploy fresh, then run
@@ -44,6 +51,7 @@ const TERMS = JSON.stringify({
   min_coverage_bps: 5000,
 });
 const WINDOW = 10;
+const DEMO_APPEAL_WINDOW = 30;
 
 function parseArgs(argv: string[]): Record<string, string> {
   const out: Record<string, string> = {};
@@ -113,12 +121,15 @@ async function main() {
   if (contract) {
     console.log(`   using existing contract ${contract}`);
   } else {
-    const source = fs.readFileSync(path.join(ROOT, "contracts", "observa.py"), "utf-8");
+    const source = fs
+      .readFileSync(path.join(ROOT, "contracts", "observa.py"), "utf-8")
+      .replace("APPEAL_WINDOW_SEC = 3600", `APPEAL_WINDOW_SEC = ${DEMO_APPEAL_WINDOW}`);
     const created = await cd.deployContract(source, []);
     if (!created.ok) throw new Error(`deploy failed at ${created.phase}: ${created.reason}`);
     contract = String(created.address);
     console.log(`   ok  deployed  ${short(created.hash ?? "")}`);
     console.log(`   contract ${contract}`);
+    console.log(`   demo appeal window ${DEMO_APPEAL_WINDOW}s (production source stays 3600s)`);
   }
 
   line(2, "make sure the provider can stake an appeal bond");
@@ -149,8 +160,24 @@ async function main() {
 
   const bond = (escrowA * 2500n) / 10000n;
   must(await pd.writeTo(contract, "appeal", [dealA], bond), `A.appeal (bond ${bond} atto)`);
-  must(await cd.writeTo(contract, "resolve_appeal", [dealA]), "A.resolve_appeal");
-  must(await cd.writeTo(contract, "finalize", [dealA]), "A.finalize");
+
+  const demoConfig = JSON.parse(String(await cd.readFrom(contract, "get_config")));
+  const appealWait = Number(demoConfig.appeal_window_sec);
+  const earlyResolve = await cd.writeTo(contract, "resolve_appeal", [dealA]);
+  if (earlyResolve.ok) {
+    throw new Error("resolve_appeal succeeded before the evidence deadline; refusing to finalize");
+  }
+  console.log(`   early resolve rejected while ${appealWait}s window is open`);
+
+  if (appealWait <= 60) {
+    console.log(`   waiting ${appealWait + 5}s for the appeal deadline`);
+    await SLEEP((appealWait + 5) * 1000);
+    must(await cd.writeTo(contract, "resolve_appeal", [dealA]), "A.resolve_appeal");
+    must(await cd.writeTo(contract, "finalize", [dealA]), "A.finalize");
+  } else {
+    console.log("   attached contract uses a long deadline; stopping before finalize");
+    console.log("   deploy a fresh demo contract to see the full payout path");
+  }
 
   // --- Deal B: pre-start cancel ------------------------------------------
   line(4, "deal B: open -> fund -> cancel (refund)");
@@ -176,16 +203,22 @@ async function main() {
   console.log(`   A audit        appeal_decided=${auditA.appeal_decided} final=${auditA.final} evidence_unavailable=${auditA.appeal_evidence_unavailable}`);
   console.log(`   B              ${finalB.status}`);
   console.log(`   terms(A)       ${termsA.slice(0, 70)}…`);
-  console.log(`   provider row   ${JSON.stringify(payoutsA.payouts.find((row: any) => row.kind === "provider"))}`);
-  console.log(`   bond row       ${JSON.stringify(payoutsA.payouts.find((row: any) => row.kind === "bond"))}`);
+  if (finalA.status === "FINALIZED") {
+    console.log(`   provider row   ${JSON.stringify(payoutsA.payouts.find((row: any) => row.kind === "provider"))}`);
+    console.log(`   bond row       ${JSON.stringify(payoutsA.payouts.find((row: any) => row.kind === "bond"))}`);
+  } else {
+    console.log("   payout rows    pending the attached contract's evidence deadline");
+  }
   console.log(`   pending        ${pending.length} row(s)`);
   console.log(`   stats          ${JSON.stringify(stats)}`);
   console.log(`   max_slots      ${config.max_slots}`);
   console.log(`   log[0:8]       ${log.length} entries`);
 
-  console.log("\nPayout rows are deliberately asynchronous: after finalize they move");
-  console.log("owed -> sent -> delivered, and `node deploy/verifyScript.ts` checks that");
-  console.log("transition. The demo only reports what the ledger recorded.");
+  if (finalA.status === "FINALIZED") {
+    console.log("\nPayout rows are deliberately asynchronous: after finalize they move");
+    console.log("owed -> sent -> delivered, and `node deploy/verifyScript.ts` checks that");
+    console.log("transition. The demo only reports what the ledger recorded.");
+  }
   console.log(`\ncontract ${contract}`);
 }
 

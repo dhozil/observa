@@ -334,13 +334,15 @@ def _probe_once(endpoint: str, expect_status: int) -> dict:
     return {"s": PROBE_UP if up else PROBE_DOWN, "http": status, "reachable": True}
 
 
-def _attestation_once(url: str, committed_digest: str) -> dict:
+def _attestation_once(url: str, committed_digest: str, expected: dict) -> dict:
     """
     Fetch the monitor's published report and bind it to its on-chain commitment.
 
     The report is only trusted when its canonical JSON hashes to the digest the
     monitor committed on-chain, which is what stands in for a signature the VM
-    cannot check. Error messages are deliberately static so that a leader and a
+    cannot check. It must also name the same deal, service, terms and observation
+    window as the agreement: a digest only binds bytes, not the agreement those
+    bytes describe. Error messages are deliberately static so that a leader and a
     validator that hit the same failure agree on the failure text.
     """
     try:
@@ -361,6 +363,16 @@ def _attestation_once(url: str, committed_digest: str) -> dict:
     digest = _digest(_canonical_json(parsed))
     if digest != committed_digest:
         raise gl.vm.UserError(f"{ERROR_EXTERNAL} attestation does not match the committed digest")
+    if str(parsed.get("deal_id", "")) != expected["deal_id"]:
+        raise gl.vm.UserError(f"{ERROR_EXTERNAL} attestation is for a different deal")
+    if str(parsed.get("service", "")) != expected["service"]:
+        raise gl.vm.UserError(f"{ERROR_EXTERNAL} attestation service does not match the agreement")
+    if str(parsed.get("terms_digest", "")).strip().lower() != expected["terms_digest"]:
+        raise gl.vm.UserError(f"{ERROR_EXTERNAL} attestation terms digest does not match the agreement")
+    window_start = _require_int(parsed.get("window_start_unix"), "window_start_unix")
+    window_end = _require_int(parsed.get("window_end_unix"), "window_end_unix")
+    if window_start != expected["window_start_unix"] or window_end != expected["window_end_unix"]:
+        raise gl.vm.UserError(f"{ERROR_EXTERNAL} attestation window does not match the agreement")
     uptime = _require_int(parsed.get("uptime_bps"), "uptime_bps")
     if uptime < 0:
         uptime = 0
@@ -790,8 +802,10 @@ class Observa(gl.Contract):
         Monitor commits the digest of its published report before settlement.
 
         Because the VM cannot verify a signature, the commitment is the binding:
-        the report any validator later fetches must hash to exactly this digest.
-        The monitor may re-commit a corrected digest while monitoring is open,
+        the report any validator later fetches must hash to exactly this digest,
+        and its `deal_id`, `service`, `terms_digest`, `window_start_unix` and
+        `window_end_unix` must match this deal. The monitor may re-commit a
+        corrected digest while monitoring is open,
         including during an appeal window. A changed digest clears the old recorded
         reading, because it no longer describes the committed bytes.
         """
@@ -826,7 +840,8 @@ class Observa(gl.Contract):
         Fetch the committed report and record its uptime as the attested reading.
 
         Validators refetch and re-hash the report; a report whose bytes no longer
-        match the commitment is rejected rather than trusted. Admissible while the
+        match the commitment, or whose deal/service/terms/window fields describe a
+        different agreement, is rejected rather than trusted. Admissible while the
         monitoring or appeal window is open, so a corrected report can be recorded.
         """
         deal = self._require_deal(deal_id)
@@ -843,9 +858,16 @@ class Observa(gl.Contract):
     def _derive_attestation(self, deal: Deal) -> dict:
         url = str(deal.attestation_url)
         committed = str(deal.attested_digest)
+        expected = {
+            "deal_id": str(deal.id),
+            "service": str(deal.service),
+            "terms_digest": str(deal.terms_digest).strip().lower(),
+            "window_start_unix": int(deal.started_at_unix),
+            "window_end_unix": int(deal.end_unix),
+        }
 
         def leader_fn():
-            return _attestation_once(url, committed)
+            return _attestation_once(url, committed, expected)
 
         def validator_fn(leaders_res) -> bool:
             def compare(theirs, mine) -> bool:
@@ -997,6 +1019,12 @@ class Observa(gl.Contract):
         re-committed report are folded in, so an appeal is a genuine second look
         rather than a re-run of the same numbers. The second verdict is final.
 
+        Resolution cannot run before the appeal deadline, even though this method
+        is permissionless. Otherwise an appellant could file and immediately
+        resolve, locking the verdict before the remaining evidence window closes.
+        The observation writes are closed at the same deadline by
+        `_monitoring_open`, so appealed and unappealed paths share one cutoff.
+
         If the source is unreachable and the recorded evidence cannot be refreshed,
         the tentative verdict stands and the bond is returned to the appellant. That
         keeps an infrastructure outage from parking the deal in APPEALED forever.
@@ -1004,6 +1032,8 @@ class Observa(gl.Contract):
         deal = self._require_deal(deal_id)
         if str(deal.status) != STATUS_APPEALED:
             raise gl.vm.UserError(f"{ERROR_EXPECTED} deal {deal_id} has no pending appeal")
+        if _now_unix() <= int(deal.appeal_deadline_unix):
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} the appeal window for {deal_id} is still open")
 
         try:
             uptime, outcome, release_bps, source = self._compute_verdict(
@@ -1039,16 +1069,17 @@ class Observa(gl.Contract):
         """
         Pay out the standing verdict and settle any appeal bond.
 
-        Permissionless: callable once an appeal was decided, or once an unappealed
-        window has closed. When no appeal was filed the verdict is recomputed here
-        so late probes and a correctly re-committed report are honoured; if fresh
-        evidence is unavailable, the tentative verdict stands rather than blocking
-        finalization. A decided appeal is authoritative and is not recomputed.
+        Permissionless, but always after the appeal deadline. An unappealed verdict
+        is recomputed here so late probes and a correctly re-committed report are
+        honoured; if fresh evidence is unavailable, the tentative verdict stands
+        rather than blocking finalization. A decided appeal is authoritative and is
+        not recomputed. The deadline check does not depend on `final`, so an early
+        appeal resolution can never shorten the evidence window.
         """
         deal = self._require_deal(deal_id)
         if str(deal.status) != STATUS_RESOLVED:
             raise gl.vm.UserError(f"{ERROR_EXPECTED} deal {deal_id} has no standing verdict")
-        if not bool(deal.final) and _now_unix() <= int(deal.appeal_deadline_unix):
+        if _now_unix() <= int(deal.appeal_deadline_unix):
             raise gl.vm.UserError(f"{ERROR_EXPECTED} the appeal window for {deal_id} is still open")
         if not bool(deal.final):
             refresh = str(deal.attested_digest) != "" and not bool(deal.attested)
@@ -1194,7 +1225,7 @@ class Observa(gl.Contract):
         return {
             "principle": "Optimistic Democracy, equivalence check",
             "probe": "derived UP/DOWN compared exactly",
-            "attestation": "report re-hashed against the committed digest, then uptime_bps compared exactly",
+            "attestation": "report re-hashed against the committed digest and bound to the deal/service/terms/window, then uptime_bps compared exactly",
             "release_bps": "computed deterministically from measured uptime; no model involved",
             "appeal": "a tentative verdict is paid only at finalize; a bonded appeal re-derives it (late probes + refreshed attestation), and an unavailable source keeps the tentative verdict and returns the bond",
             "coverage": "probes are authoritative only when coverage reaches min_coverage_bps; otherwise attestation, else inconclusive refund after the lapse grace",
@@ -1222,12 +1253,14 @@ class Observa(gl.Contract):
         True while the SLA window is ACTIVE, and again during an open appeal
         window so a contest can introduce late probes and a corrected
         attestation. The per-slot timing check still bounds which probes land.
+        Once the appeal deadline passes, appealed and unappealed verdicts are
+        both closed to new evidence.
         """
         status = str(deal.status)
         if status == STATUS_ACTIVE:
             return True
         if status == STATUS_APPEALED:
-            return True
+            return _now_unix() <= int(deal.appeal_deadline_unix)
         if status == STATUS_RESOLVED and not bool(deal.final):
             return _now_unix() <= int(deal.appeal_deadline_unix)
         return False

@@ -22,8 +22,10 @@ uptime is a single trusted party. Observa splits the difference:
 3. **Optionally, a monitor attests.** The monitor commits `sha256(canonical_json(
    report))` on-chain, then publishes the report at an HTTPS URL. Validators
    refetch and re-hash; a report whose bytes no longer match the commitment is
-   rejected. The on-chain digest is what stands in for a signature the VM cannot
-   verify.
+   rejected. The report must also name the same `deal_id`, `service`,
+   `terms_digest` and observation window as the agreement, so a valid report for
+   another deal cannot be re-committed. The on-chain digest is what stands in for
+   a signature the VM cannot verify.
 4. **Settlement is deterministic.** Measured uptime (integer bps) maps to a
    release share — `10000` when the target is met, else `10000 * uptime // target`
    — with no model in the loop. `MET` pays the provider; `BREACHED` splits the
@@ -32,7 +34,9 @@ uptime is a single trusted party. Observa splits the difference:
    an appeal window without moving money. Either party may stake a bond to appeal;
    the verdict is then re-derived from the freshest evidence (late probes plus a
    re-published, re-committed attested report). The loser forfeits the bond, and
-   `finalize` decides the split and creates payout obligations.
+   `finalize` decides the split and creates payout obligations. `resolve_appeal`
+   and `finalize` both refuse to run before the deadline, so filing an appeal
+   cannot shorten the window; evidence writes close at the same cutoff.
 
 Probes win only when at least one slot was probed **and** coverage clears the
 terms' `min_coverage_bps`; otherwise the attested reading is used. A thin probe
@@ -98,8 +102,21 @@ so the exact bytes both parties agreed to are provable.
 The monitor's report is canonical JSON such as:
 
 ```json
-{"nonce": "att-1", "service": "Acme Payments API", "uptime_bps": 9900}
+{
+  "deal_id": "s1",
+  "service": "Acme Payments API",
+  "terms_digest": "<the deal's terms_digest>",
+  "window_start_unix": 1930089600,
+  "window_end_unix": 1930093200,
+  "uptime_bps": 9900,
+  "nonce": "att-1"
+}
 ```
+
+`commit_attestation` binds the digest; `submit_attestation` (and any refresh
+during `resolve_appeal`/`finalize`) rejects a report whose deal, service, terms
+digest or window does not match the deal on-chain. The monitor can read those
+values from `get_deal` and must publish exactly the canonical bytes it committed.
 
 ## Development
 
@@ -126,13 +143,14 @@ Frontend contract-surface checks run in Node:
 npm run test:sync             # no network: methods, constants, canonical digest
 npm run test:frontend         # live reads against the deployed contract
 npm run test:frontend:write   # adds a reverting write + tx-phase assertions
-npm run test:frontend:full    # full probe/settle/appeal/finalize path (needs keys)
-npm run test:frontend:e2e     # Chrome + injected EIP-6963 wallets, full UI path
+npm run test:frontend:full    # probe/settle/appeal + deadline guard (needs keys)
+npm run test:frontend:e2e     # Chrome + injected EIP-6963 wallets through the appeal
 ```
 
 The browser E2E needs a production build (`npm --prefix frontend run build`),
 Chrome (or `CHROME_PATH`), and both wallet keys. It starts the built app on port
-`3100`, backs off on Studionet rate limits, and leaves the finished deal on chain.
+`3100`, backs off on Studionet rate limits, and leaves the appealed deal waiting
+on its real evidence deadline.
 
 The runner is pinned in the first line of the contract; the network rejects
 `test`/`latest` aliases. See `AGENTS.md` for durable design notes.
@@ -149,10 +167,20 @@ Copy-Item .env.example .env
 npm run deploy:dry
 npm run deploy
 
+# Test/demo only: patch APPEAL_WINDOW_SEC so the deadline is quick to cross.
+npm run deploy -- --appeal-window 60
+
 # Exercise a real probe, a bonded appeal, finalize and payout delivery.
-npm run demo -- --address 0x...
+# A fresh demo deploy uses a 30s appeal window so the full lifecycle is quick;
+# the production source keeps APPEAL_WINDOW_SEC = 3600.
+npm run demo
 npm run verify
 ```
+
+With `--address`, the demo attaches to an existing contract. If its appeal window
+is longer than 60s, the run stops after proving that an immediate `resolve_appeal`
+is rejected; use a fresh deploy to see the payout rows. `verify` accepts `--wait`
+when attaching to a contract with the real one-hour window.
 
 Keys are read from the environment, `OBSERVA_KEY_FILE` / the project wallet
 `D:\Genlayer-project\wallet\.env`, and the provider from `OBSERVA_SELLER_KEY` /
@@ -160,13 +188,23 @@ Keys are read from the environment, `OBSERVA_KEY_FILE` / the project wallet
 
 Current deployment:
 
-| network | contract | deploy tx |
+| purpose | contract | deploy tx |
 | --- | --- | --- |
-| Studionet (`61999`) | `0xAD6aCc4Be89dF0C9e246eeF6274D77EA589De17d` | `0xd873cfa9f034ea0994f62ef4f8f56e6831f6a0225f194658bf210f6edc05c3f7` |
+| Studionet production demo (1h, pre-hardening) | `0xAD6aCc4Be89dF0C9e246eeF6274D77EA589De17d` | `0xd873cfa9f034ea0994f62ef4f8f56e6831f6a0225f194658bf210f6edc05c3f7` |
+| Studionet test/demo (60s, deadline guard + report binding) | `0xfc00d1B20Fc07E43EdAAf390Bf8C46649741ed9c` | `0xafec9b15b60b95e4fd1e67dffc7783329260707cee1784992d5f863c02695c7c` |
 
-The demo creates `s1` (probe, settle, appeal, finalize) and `s2` (cancel/refund)
-on that instance. `npm run verify` deploys a fresh contract and checks both money
-paths, including payout delivery, against real consensus.
+The 1h instance predates the appeal-deadline guard and the report binding. The
+60s instance was deployed from the hardened source with only `APPEAL_WINDOW_SEC`
+patched, and `frontend/.env.local` points at it so the full UI path can finish
+quickly. The earlier 60s instance `0xad5dfb1b972C9717cFc7B7460961d051203185E1`
+predates report binding and is superseded. Update the Vercel
+`NEXT_PUBLIC_OBSERVA_ADDRESS` to `0xfc00d1B20Fc07E43EdAAf390Bf8C46649741ed9c`
+when testing the deployed app.
+
+A fresh demo deploy creates `s1` (probe, settle, appeal, deadline, finalize) and
+`s2` (cancel/refund). `npm run verify` deploys a fresh copy with a 30s appeal
+window and checks both money paths, including the early-resolve guard and payout
+delivery, against real consensus. Direct tests pin the production 3600s constant.
 
 ## Frontend
 
@@ -205,9 +243,11 @@ grain so cards and long-form copy stay legible while the field moves with the pa
   is not authoritative even if every probed slot was `UP`; the `min_coverage_bps`
   floor decides when probes win.
 - The attestation path trusts the named monitor. There is no on-chain signature
-  verification; the monitor's on-chain digest commitment is the binding. A monitor
-  may re-commit a corrected report during the appeal window, so the bond protects
-  contested verdicts, not against a monitor that changes its own report.
+  verification; the monitor's on-chain digest commitment is the binding. The
+  report is bound to the deal, service, terms and window, so a report for another
+  agreement cannot be replayed. A monitor may still re-commit a corrected report
+  during the appeal window, so the bond protects contested verdicts, not against
+  a monitor that changes its own report.
 - A health endpoint is not the same as real user experience: a provider can run a
   health route that is up while the product is down. Observa therefore prefers to
   probe the real service route, and the bonded appeal is the implemented mitigation
@@ -221,7 +261,9 @@ grain so cards and long-form copy stay legible while the field moves with the pa
 - During the window, late probes and a corrected (re-committed) attestation are
   admissible. A different committed digest clears the old recorded reading; it must
   be resubmitted (or refreshed during `resolve_appeal`/`finalize`) before it can be
-  used again.
+  used again. Probe and attestation writes close at the deadline.
+- `resolve_appeal` and `finalize` both revert until `now > appeal_deadline_unix`.
+  An early appeal cannot lock the verdict while admissible evidence remains.
 - `resolve_appeal` re-derives the verdict; the appellant wins the bond only if the
   verdict actually moved in their favour, otherwise they forfeit it to the
   counterparty. If the source is unavailable and the recorded evidence cannot be

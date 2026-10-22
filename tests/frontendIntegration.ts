@@ -207,7 +207,7 @@ async function main() {
   }
 
   if (FULL) {
-    section("5. full path - open -> fund -> start -> probe -> settle -> appeal -> finalize");
+    section("5. full path - open -> fund -> start -> probe -> settle -> appeal (deadline guard)");
     const { clientKey, providerKey } = loadKeys();
     if (!clientKey || !providerKey) {
       check("client and provider keys available for --full", false);
@@ -218,6 +218,7 @@ async function main() {
       const cd = makeDriver(client, shared);
       const pd = makeDriver(provider, shared);
       const phases: string[] = [];
+      const heldBefore = BigInt((await S.getStats(read)).held_atto);
 
       const opened = await S.openDeal(client, provider.account.address, TERMS, (phase: string) => phases.push(phase));
       check("openDeal succeeds", opened.ok === true, opened.ok ? short(opened.hash) : opened.message);
@@ -261,21 +262,30 @@ async function main() {
         }
         const appealed = await S.appeal(provider, id, bond, (phase: string) => phases.push(phase));
         check("appeal succeeds", appealed.ok === true, appealed.ok ? short(appealed.hash) : appealed.message);
+        const appealedDeal = await S.getDeal(read, id);
+        check("the deal reads back APPEALED", appealedDeal.status === "APPEALED", appealedDeal.status);
         const rederived = await S.resolveAppeal(client, id, (phase: string) => phases.push(phase));
-        check("resolveAppeal succeeds", rederived.ok === true, rederived.ok ? short(rederived.hash) : rederived.message);
-        const finalized = await S.finalize(client, id, (phase: string) => phases.push(phase));
-        check("finalize succeeds", finalized.ok === true, finalized.ok ? short(finalized.hash) : finalized.message);
+        check(
+          "resolveAppeal is rejected before the deadline",
+          rederived.ok === false,
+          rederived.ok ? "unexpected success" : rederived.message,
+        );
+        const earlyFinal = await S.finalize(client, id, (phase: string) => phases.push(phase));
+        check(
+          "finalize is rejected while the appeal is pending",
+          earlyFinal.ok === false,
+          earlyFinal.ok ? "unexpected success" : earlyFinal.message,
+        );
 
-        const finalDeal = await S.getDeal(read, id);
-        check("the deal reads back FINALIZED/MET", finalDeal.status === "FINALIZED" && finalDeal.outcome === "MET", `${finalDeal.status}/${finalDeal.outcome}`);
-        check("the appeal is final and evidence was available", finalDeal.appeal_decided === true && finalDeal.appeal_evidence_unavailable === false);
-        const info = await S.getPayouts(read, id);
-        const rows = info.payouts;
-        check("the payout ledger has provider + bond rows", rows.some((row: any) => row.kind === "provider") && rows.some((row: any) => row.kind === "bond"), rows.map((row: any) => row.kind).join(","));
-        check("the provider row is the escrow", rows.find((row: any) => row.kind === "provider")?.amount_atto === String(ESCROW));
-        check("the bond row is the bond", rows.find((row: any) => row.kind === "bond")?.amount_atto === String(bond));
-        check("stats stay conserved after finalize", (await S.getStats(read)).conserved === true);
-        console.log(`   ${Number(ESCROW) / 1e18} GEN escrow settled through the frontend (deal ${id})`);
+        const heldDeal = await S.getDeal(read, id);
+        check("the verdict is not final early", heldDeal.status === "APPEALED" && heldDeal.final === false, `${heldDeal.status}/${heldDeal.final}`);
+        const heldStats = await S.getStats(read);
+        check(
+          "escrow plus bond stay held until the deadline",
+          BigInt(heldStats.held_atto) === heldBefore + ESCROW + bond && heldStats.conserved === true,
+          heldStats.held_atto,
+        );
+        console.log(`   ${Number(ESCROW) / 1e18} GEN escrow is contested and waiting for the appeal deadline (deal ${id})`);
       }
     }
   }

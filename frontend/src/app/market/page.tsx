@@ -15,7 +15,7 @@ const FILTERS = ["ALL", "OPEN", "ACTIVE", "RESOLVED", "FINALIZED"] as const;
 export default function MarketPage() {
   const ids = useDealIds();
   const orderedIds = React.useMemo(() => (ids.data ?? []).slice().reverse(), [ids.data]);
-  const deals = useDeals(orderedIds.length ? orderedIds : null, 20000);
+  const deals = useDeals(ids.data === null ? null : orderedIds, 20000);
   const [filter, setFilter] = React.useState<(typeof FILTERS)[number]>("ALL");
   const [query, setQuery] = React.useState("");
 
@@ -105,9 +105,9 @@ export default function MarketPage() {
               </div>
             ))}
           </div>
-        ) : deals.error ? (
+        ) : (ids.error ?? deals.error) ? (
           <p className="mt-7 border-l-2 border-loss bg-loss/[0.06] px-4 py-3 text-sm text-loss">
-            {deals.error}
+            {ids.error ?? deals.error}
           </p>
         ) : visible.length === 0 ? (
           <div className="mt-7 border-t border-line py-16">

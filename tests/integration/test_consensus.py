@@ -94,17 +94,30 @@ def _reachable(url: str, timeout: float = 15.0) -> bool:
     return "result" in payload
 
 
-def staged_contract() -> str:
+def staged_contract(appeal_window: int | None = None) -> str:
     """A fresh copy of the contract per deploy, relative to the contracts dir.
 
     A local simulator's engine only honours ``@allow_storage`` on a module it has
     not already loaded, so a repeated deploy of one file fails for reasons that have
     nothing to do with the contract. On Studionet the extra comment is harmless.
+
+    The lifecycle tests pass a short appeal window so real consensus can be run
+    without sleeping for the production hour. Only that constant changes; the
+    direct suite pins ``APPEAL_WINDOW_SEC`` and the deadline guard on the real
+    source.
     """
     tag = next(_counter)
     STAGING.mkdir(parents=True, exist_ok=True)
     target = STAGING / f"observa_{tag}.py"
     shutil.copyfile(CONTRACT_SOURCE, target)
+    if appeal_window is not None:
+        source = target.read_text(encoding="utf-8")
+        source = source.replace(
+            "APPEAL_WINDOW_SEC = 3600",
+            f"APPEAL_WINDOW_SEC = {int(appeal_window)}",
+            1,
+        )
+        target.write_text(source, encoding="utf-8")
     with target.open("a", encoding="utf-8") as handle:
         handle.write(f"\n# integration deploy {tag}: a unique source, so the engine loads a fresh module\n")
     return str(target.relative_to(REPO_ROOT / "contracts"))
@@ -134,7 +147,7 @@ def require_genlayer_network():
 # ------------------------------------------------------------------- helpers
 
 
-def deploy_observa(account):
+def deploy_observa(account, appeal_window: int | None = None):
     """Deploy and return a handle that really has methods on it.
 
     genlayer-test builds the handle's methods from a schema it fetches over RPC
@@ -146,7 +159,7 @@ def deploy_observa(account):
     from gltest.contracts.contract import Contract
     from gltest.utils import extract_contract_address
 
-    factory = get_contract_factory(contract_file_path=staged_contract())
+    factory = get_contract_factory(contract_file_path=staged_contract(appeal_window))
     receipt = factory.deploy_contract_tx(args=[], account=account)
     schema = factory._get_schema_with_fallback()
     if not isinstance(schema, dict) or not schema.get("methods"):
@@ -283,8 +296,9 @@ def test_probe_settles_by_real_consensus(default_account, accounts):
 
 def test_bonded_appeal_settles_by_consensus(default_account, accounts):
     """The full Phase 4 lifecycle: probe, settle to a tentative verdict, appeal with
-    a bond, re-derive, and finalize. Real consensus runs the probe's web fetch."""
-    client = deploy_observa(default_account)
+    a bond, wait out the short staged window, re-derive, and finalize. Real
+    consensus runs the probe's web fetch."""
+    client = deploy_observa(default_account, appeal_window=30)
     provider = as_account(client, accounts[1])
     window = 2
     deal_id = open_fund_start(client, accounts[1].address, terms_json(window_seconds=window, slots=1))
@@ -299,6 +313,11 @@ def test_bonded_appeal_settles_by_consensus(default_account, accounts):
     bond = ESCROW * 2500 // 10000
     assert tx_execution_succeeded(client.appeal(args=[deal_id]).transact(value=bond))
     assert deal(client, deal_id)["status"] == "APPEALED"
+
+    early = client.resolve_appeal(args=[deal_id]).transact()
+    assert not tx_execution_succeeded(early), "an appeal must not resolve before its window closes"
+
+    time.sleep(35)
     assert tx_execution_succeeded(client.resolve_appeal(args=[deal_id]).transact())
     assert deal(client, deal_id)["final"] is True
     assert tx_execution_succeeded(client.finalize(args=[deal_id]).transact())
@@ -317,9 +336,10 @@ def test_bonded_appeal_settles_by_consensus(default_account, accounts):
 @pytest.mark.slow
 def test_settle_after_a_short_window(default_account, accounts):
     """The load-bearing end-to-end test: probe, wait out a real 45s window, settle,
-    contest the tentative verdict with a bond, re-derive, finalize, and confirm the
-    escrow is split by the measured uptime with conservation held."""
-    client = deploy_observa(default_account)
+    contest the tentative verdict with a bond, wait out a short staged appeal
+    window, re-derive, finalize, and confirm the escrow is split by the measured
+    uptime with conservation held."""
+    client = deploy_observa(default_account, appeal_window=30)
     provider = as_account(client, accounts[1])
     window = 45
     deal_id = open_fund_start(client, accounts[1].address, terms_json(window_seconds=window, slots=1))
@@ -335,6 +355,9 @@ def test_settle_after_a_short_window(default_account, accounts):
     # A bond forces the re-derivation; with no new evidence the verdict stands.
     bond = ESCROW * 2500 // 10000
     assert tx_execution_succeeded(client.appeal(args=[deal_id]).transact(value=bond))
+    early = client.resolve_appeal(args=[deal_id]).transact()
+    assert not tx_execution_succeeded(early), "an appeal must not resolve before its window closes"
+    time.sleep(35)
     assert tx_execution_succeeded(client.resolve_appeal(args=[deal_id]).transact())
     assert tx_execution_succeeded(client.finalize(args=[deal_id]).transact())
 

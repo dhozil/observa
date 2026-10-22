@@ -20,12 +20,13 @@ const READ_TIMEOUT_MESSAGE =
 function useRead<T>(
   run: (client: GenLayer) => Promise<T>,
   key: string,
-  options?: { refreshMs?: number },
+  options?: { refreshMs?: number; enabled?: boolean },
 ): AsyncState<T> {
   const { read } = useWallet();
   const [data, setData] = React.useState<T | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [nonce, setNonce] = React.useState(0);
+  const enabled = options?.enabled ?? true;
 
   const runRef = React.useRef(run);
   React.useEffect(() => {
@@ -33,6 +34,7 @@ function useRead<T>(
   });
 
   React.useEffect(() => {
+    if (!enabled) return;
     let cancelled = false;
     let timer: number | undefined;
     const timeout = new Promise<never>((_, reject) => {
@@ -54,7 +56,7 @@ function useRead<T>(
       cancelled = true;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [read, key, nonce]);
+  }, [read, key, nonce, enabled]);
 
   React.useEffect(() => {
     if (!options?.refreshMs) return;
@@ -87,7 +89,7 @@ export function useDeals(ids: string[] | null, refreshMs?: number): AsyncState<O
       return O.getDeals(client, ids);
     },
     key,
-    { refreshMs },
+    { refreshMs, enabled: ids !== null },
   );
 }
 

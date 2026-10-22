@@ -799,14 +799,16 @@ function ActionPanel({
   const windowOpen = deal.status === "ACTIVE";
   const monitoringOpen =
     deal.status === "ACTIVE" ||
-    deal.status === "APPEALED" ||
-    (deal.status === "RESOLVED" && !deal.final && now <= deal.appeal_deadline_unix);
+    ((deal.status === "APPEALED" || (deal.status === "RESOLVED" && !deal.final)) &&
+      now <= deal.appeal_deadline_unix);
   const probeHint = windowOpen
     ? "Permissionless. Validators refetch the committed endpoint and agree on UP/DOWN."
-    : "Late probes filed during the appeal window still count in a re-derivation.";
+    : monitoringOpen
+      ? "Late probes filed before the appeal deadline still count in a re-derivation."
+      : "The evidence window has closed; the verdict can no longer change.";
   const appealOpen = deal.status === "RESOLVED" && !deal.final && now <= deal.appeal_deadline_unix;
-  const canFinalize =
-    deal.status === "RESOLVED" && (deal.final || now > deal.appeal_deadline_unix);
+  const canResolveAppeal = deal.status === "APPEALED" && now > deal.appeal_deadline_unix;
+  const canFinalize = deal.status === "RESOLVED" && now > deal.appeal_deadline_unix;
   const lapsed = isLapsed(deal, now);
   const authoritativeProbes = probeCoverageAuthoritative(deal);
   const thinCoverage = deal.probed_slots > 0 && !authoritativeProbes && !deal.attested;
@@ -1072,18 +1074,29 @@ function ActionPanel({
         ) : null}
 
         {deal.status === "APPEALED" ? (
-          <Section
-            title="Re-derive the verdict"
-            hint="Folds in late probes and re-fetches the committed attestation. The second verdict is final."
-          >
-            <Button
-              className="w-full"
-              onClick={() => exec((client, onPhase) => resolveAppeal(client, deal.id, onPhase))}
-              disabled={disabled}
+          canResolveAppeal ? (
+            <Section
+              title="Re-derive the verdict"
+              hint="Folds in late probes and re-fetches the committed attestation. The second verdict is final."
             >
-              Resolve appeal
-            </Button>
-          </Section>
+              <Button
+                className="w-full"
+                onClick={() => exec((client, onPhase) => resolveAppeal(client, deal.id, onPhase))}
+                disabled={disabled}
+              >
+                Resolve appeal
+              </Button>
+            </Section>
+          ) : (
+            <Section
+              title="Evidence window still open"
+              hint="Late probes and a corrected attestation remain admissible until the deadline. Resolution unlocks after that."
+            >
+              <p className="text-center font-mono text-[0.68rem] text-muted">
+                evidence closes in {countdown(deal.appeal_deadline_unix, now)}
+              </p>
+            </Section>
+          )
         ) : null}
 
         {canFinalize ? (

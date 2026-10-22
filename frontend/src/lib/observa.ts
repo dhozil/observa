@@ -182,8 +182,8 @@ export const STATUS_NOTE: Record<string, string> = {
   OPEN: "Terms committed. Waiting for the client to fund the escrow.",
   FUNDED: "Escrow locked. Waiting for the provider to start the window.",
   ACTIVE: "The monitoring window is open. Any wallet may probe a slot.",
-  RESOLVED: "A tentative verdict exists. The appeal window is deciding whether it stands.",
-  APPEALED: "A party staked a bond. The verdict will be re-derived from fresh evidence.",
+  RESOLVED: "A tentative verdict exists. Evidence stays open until the appeal deadline.",
+  APPEALED: "A party staked a bond. Evidence stays open until the deadline, then the verdict is re-derived.",
   FINALIZED: "The verdict is final. Payout delivery is tracked separately.",
   REFUNDED: "The escrow is returning to the client. Delivery is tracked separately.",
 };
@@ -285,8 +285,8 @@ export function nextProbeSlot(
 ): number | null {
   const monitoringOpen =
     deal.status === "ACTIVE" ||
-    deal.status === "APPEALED" ||
-    (deal.status === "RESOLVED" && !deal.final && now <= deal.appeal_deadline_unix);
+    ((deal.status === "APPEALED" || (deal.status === "RESOLVED" && !deal.final)) &&
+      now <= deal.appeal_deadline_unix);
   if (!monitoringOpen || !deal.slot_seconds) return null;
   for (let index = 0; index < deal.slots; index += 1) {
     if (log[index]) continue;
@@ -471,7 +471,7 @@ export const CONSENSUS_WAIT = {
   retries: 120,
 } as const;
 
-function leaderFailure(receipt: ProtocolReceipt): string | null {
+export function leaderFailure(receipt: ProtocolReceipt): string | null {
   const leader = receipt?.consensus_data?.leader_receipt?.[0];
   if (!leader) return null;
   const status = leader.result?.status;

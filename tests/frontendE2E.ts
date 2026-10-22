@@ -3,8 +3,9 @@
  *
  * Unlike frontendIntegration.ts (which drives the typed wrappers in Node), this
  * loads the real production build in Chrome, connects two EIP-6963 wallets, and
- * clicks through a complete deal: open -> fund -> start -> probe -> settle ->
- * appeal -> resolve -> finalize.
+ * clicks through a deal: open -> fund -> start -> probe -> settle -> appeal. The
+ * covered deal then correctly waits for the one-hour evidence deadline before it
+ * can be resolved or finalized, so that last wait stays in the contract tests.
  *
  * The wallets are real EIP-1193 providers with no extension: they announce over
  * EIP-6963, answer account/chain requests, and sign with the same keys the
@@ -433,7 +434,7 @@ async function main() {
       "slot 0 is observed",
     );
 
-    section("4. settle, appeal, resolve, finalize");
+    section("4. settle, appeal, and deadline guard");
     await must(page.getByRole("button", { name: /settle/i }), "settle appears after the window", 180_000);
     await writeStep(
       page,
@@ -444,20 +445,17 @@ async function main() {
     await writeStep(
       page,
       page.getByRole("button", { name: /file appeal/i }),
-      page.getByRole("button", { name: /resolve appeal/i }),
-      "the appealed deal is resolvable",
+      page.getByText("Evidence window still open", { exact: true }),
+      "the appeal keeps the evidence window open",
     );
-    await writeStep(
-      page,
-      page.getByRole("button", { name: /resolve appeal/i }),
-      page.getByRole("button", { name: /pay out escrow/i }),
-      "finalize is offered after the appeal",
-    );
-    await writeStep(
-      page,
-      page.getByRole("button", { name: /pay out escrow/i }),
-      page.getByText("FINALIZED", { exact: true }).first(),
-      "the deal reads FINALIZED",
+    const resolveCount = await page.getByRole("button", { name: /resolve appeal/i }).count();
+    const payoutCount = await page.getByRole("button", { name: /pay out escrow/i }).count();
+    check("resolve is not offered before the deadline", resolveCount === 0, String(resolveCount));
+    check("finalize is not offered before the deadline", payoutCount === 0, String(payoutCount));
+    check(
+      "the appealed deal is still APPEALED",
+      (await pageText(page)).includes("APPEALED"),
+      "status text",
     );
 
     section("5. browser health");

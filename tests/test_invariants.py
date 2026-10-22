@@ -22,7 +22,7 @@ from conftest import (
     LAPSE_GRACE_SEC,
     SLOT_SECONDS,
     active_deal,
-    attestation_report,
+    attestation_for,
     confirm_all_payouts,
     file_appeal,
     hx,
@@ -159,9 +159,9 @@ def test_books_hold_across_mixed_random_lifecycles(
             bond = int(deal(contract, deal_id)["escrow_atto"]) * 2500 // 10000
             bond = max(bond, 10 ** 15)
             file_appeal(direct_vm, contract, appellant, deal_id, bond=bond)
-            contract.resolve_appeal(deal_id)
 
             direct_vm.warp(iso(view["end_unix"] + APPEAL_WINDOW_SEC + 1))
+            contract.resolve_appeal(deal_id)
             contract.finalize(deal_id)
             confirm_all_payouts(direct_vm, contract, deal_id)
 
@@ -182,7 +182,7 @@ def test_books_hold_across_mixed_random_lifecycles(
                 terms=sla_terms(monitor=direct_charlie, uptime_target_bps=target),
                 escrow=escrow,
             )
-            report = attestation_report(rng.choice([0, 5000, 9900, 10000]), "n" + str(seed))
+            report = attestation_for(contract, deal_id, rng.choice([0, 5000, 9900, 10000]), "n" + str(seed))
             direct_vm.sender = direct_charlie
             contract.commit_attestation(deal_id, report_digest(report), "n" + str(seed))
             mock_attestation(direct_vm, report)
@@ -242,7 +242,7 @@ def test_lapse_refund_cannot_be_reversed_by_a_late_attestation(
     contract.claim_lapsed(deal_id)
     assert deal(contract, deal_id)["status"] == "REFUNDED"
 
-    report = attestation_report(10000, "late")
+    report = attestation_for(contract, deal_id, 10000, "late")
     direct_vm.sender = direct_charlie
     with direct_vm.expect_revert("is not active"):
         contract.commit_attestation(deal_id, report_digest(report), "late")
@@ -260,7 +260,7 @@ def test_recorded_attestation_blocks_a_lapse_refund(
     deal_id = active_deal(
         direct_vm, contract, direct_alice, direct_bob, terms=sla_terms(monitor=direct_charlie)
     )
-    report = attestation_report(10000, "early")
+    report = attestation_for(contract, deal_id, 10000, "early")
     direct_vm.sender = direct_charlie
     contract.commit_attestation(deal_id, report_digest(report), "early")
     mock_attestation(direct_vm, report)

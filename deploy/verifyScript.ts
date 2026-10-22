@@ -3,9 +3,14 @@
  *
  * The script runs two money paths against real consensus:
  *   - fund -> cancel: the whole escrow is refunded;
- *   - fund -> start -> probe -> settle -> bonded appeal -> resolve -> finalize:
- *     the escrow is released, the losing appeal bond goes to the counterparty,
- *     and the payout ledger is reconciled.
+ *   - fund -> start -> probe -> settle -> bonded appeal -> wait out the evidence
+ *     deadline -> resolve -> finalize: the escrow is released, the losing appeal
+ *     bond goes to the counterparty, and the payout ledger is reconciled.
+ *
+ * A fresh verification deploy shortens only APPEAL_WINDOW_SEC to 30s so the
+ * lifecycle finishes quickly; production keeps 3600s. Attaching to a contract
+ * with a longer window requires `--wait`, which waits the real deadline instead
+ * of bypassing it.
  *
  * Payout delivery is asynchronous, so each `sent` row is confirmed by polling
  * `confirm_payout` until the balance snapshot proves the value left. If the
@@ -13,8 +18,9 @@
  * checked with the row pending rather than pretending it was paid.
  *
  * Usage:
- *   node deploy/verifyScript.ts                 # deploy a fresh contract
- *   node deploy/verifyScript.ts --address 0x... # require an empty contract
+ *   node deploy/verifyScript.ts                  # deploy a fresh 30s-window copy
+ *   node deploy/verifyScript.ts --address 0x...  # require an empty contract
+ *   node deploy/verifyScript.ts --address 0x... --wait  # wait its real deadline
  *
  * Keys: client from DEPLOYER_PRIVATE_KEY / the wallet; provider from
  *       OBSERVA_SELLER_KEY / the wallet's seller.json.
@@ -46,6 +52,7 @@ const TERMS = JSON.stringify({
   min_coverage_bps: 5000,
 });
 const WINDOW = 10;
+const VERIFY_APPEAL_WINDOW = 30;
 
 const {
   makeDriver,
@@ -135,12 +142,24 @@ async function main() {
     check("target is empty", existing === 0, `deal_count=${existing}`);
     if (existing !== 0) throw new Error("verification needs an empty contract");
   } else {
-    const source = fs.readFileSync(path.join(ROOT, "contracts", "observa.py"), "utf-8");
+    const source = fs
+      .readFileSync(path.join(ROOT, "contracts", "observa.py"), "utf-8")
+      .replace("APPEAL_WINDOW_SEC = 3600", `APPEAL_WINDOW_SEC = ${VERIFY_APPEAL_WINDOW}`);
     const created = await cd.deployContract(source, []);
     must(created, "deploy");
     contract = String(created.address);
     check("deploy read-back get_deal_count == 0", Number(await cd.readFrom(contract, "get_deal_count")) === 0);
     console.log(`   contract ${contract}`);
+    console.log(`   verification appeal window ${VERIFY_APPEAL_WINDOW}s (production source stays 3600s)`);
+  }
+
+  const startConfig = JSON.parse(String(await cd.readFrom(contract, "get_config")));
+  const appealWait = Number(startConfig.appeal_window_sec);
+  const waitLong = process.argv.includes("--wait");
+  if (appealWait > 60 && !waitLong) {
+    throw new Error(
+      `the target appeal window is ${appealWait}s; pass --wait to verify it honestly, or omit --address to use the 30s copy`,
+    );
   }
 
   const providerBalance = BigInt(await pd.balance());
@@ -181,6 +200,10 @@ async function main() {
 
   const bond = (escrowB * 2500n) / 10000n;
   must(await pd.writeTo(contract, "appeal", [dealB], bond), "B.appeal");
+  const early = await cd.writeTo(contract, "resolve_appeal", [dealB]);
+  check("B early resolve rejected while the window is open", !early.ok, early.reason ?? "unexpected success");
+  console.log(`   waiting ${appealWait + 5}s for the evidence deadline`);
+  await SLEEP((appealWait + 5) * 1000);
   must(await cd.writeTo(contract, "resolve_appeal", [dealB]), "B.resolve_appeal");
   must(await cd.writeTo(contract, "finalize", [dealB]), "B.finalize");
 

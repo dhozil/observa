@@ -84,8 +84,18 @@ def mock_probe(vm, status=200, body="ok", pattern=PROBE_PATTERN):
     vm.mock_web(pattern, {"status": status, "body": body})
 
 
-def attestation_report(uptime_bps=10000, nonce="att-1"):
-    return {"uptime_bps": uptime_bps, "nonce": nonce, "service": "Acme Payments API"}
+def attestation_for(contract, deal_id, uptime_bps=10000, nonce="att-1"):
+    """A monitor report bound to the agreement's deal, service, terms and window."""
+    view = json.loads(contract.get_deal(deal_id))
+    return {
+        "deal_id": deal_id,
+        "service": view["service"],
+        "terms_digest": view["terms_digest"],
+        "window_start_unix": view["started_at_unix"],
+        "window_end_unix": view["end_unix"],
+        "uptime_bps": uptime_bps,
+        "nonce": nonce,
+    }
 
 
 def report_digest(report) -> str:

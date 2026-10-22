@@ -21,7 +21,7 @@ export default function HomePage() {
     () => (ids.data ?? []).slice(-4).reverse(),
     [ids.data],
   );
-  const recent = useDeals(recentIds.length ? recentIds : null);
+  const recent = useDeals(ids.data === null ? null : recentIds);
 
   return (
     <>
@@ -50,7 +50,11 @@ export default function HomePage() {
 
         <ConfigNotice className="mt-6 max-w-2xl" />
 
-        {recent.loading && !recent.data ? (
+        {ids.error ?? recent.error ? (
+          <p className="mt-7 border-l-2 border-loss bg-loss/[0.06] px-4 py-3 text-sm text-loss">
+            {ids.error ?? recent.error}
+          </p>
+        ) : recent.loading && !recent.data ? (
           <div className="border-t border-line">
             {[0, 1, 2, 3].map((index) => (
               <div

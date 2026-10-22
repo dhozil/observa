@@ -319,21 +319,79 @@ async function main() {
     frontend.nextProbeSlot({ ...baseDeal, status: "ACTIVE" }, [null, null, null, null], 1400) === null,
     String(frontend.nextProbeSlot({ ...baseDeal, status: "ACTIVE" }, [null, null, null, null], 1400)),
   );
+  check(
+    "nextProbeSlot stays open during an appeal",
+    frontend.nextProbeSlot(
+      { ...baseDeal, status: "APPEALED", appeal_deadline_unix: 1200 },
+      [null, null, null, null],
+      1050,
+    ) === 0,
+  );
+  check(
+    "nextProbeSlot closes with the appeal deadline",
+    frontend.nextProbeSlot(
+      { ...baseDeal, status: "APPEALED", appeal_deadline_unix: 1040 },
+      [null, null, null, null],
+      1050,
+    ) === null,
+  );
 
   // 9. The browser digest must match Python's canonical JSON.
   section("9. canonical report digest");
-  const report = { nonce: "att-1", service: "ACME", uptime_bps: 9900 };
+  const report = {
+    deal_id: "s1",
+    service: "ACME",
+    terms_digest: "a".repeat(64),
+    window_start_unix: 1000,
+    window_end_unix: 4600,
+    uptime_bps: 9900,
+    nonce: "att-1",
+  };
   const canonical = frontend.canonicalJson(report);
   check(
     "canonicalJson sorts keys and uses compact separators",
-    canonical === '{"nonce":"att-1","service":"ACME","uptime_bps":9900}',
+    canonical ===
+      '{"deal_id":"s1","nonce":"att-1","service":"ACME","terms_digest":"' +
+        "a".repeat(64) +
+        '","uptime_bps":9900,"window_end_unix":4600,"window_start_unix":1000}',
     canonical,
   );
   const digest = await frontend.canonicalDigest(report);
   check(
     "SHA-256 matches Python json.dumps(sort_keys=True, separators=(',',':'))",
-    digest === "8c36033da4028ab82278ae0022444e0b3c9f7a55271b0c0728b2844b8e159bca",
+    digest === "64f6988ced1e6125aed763bb916096083201ed3522afcbe32671031c208c76fb",
     digest,
+  );
+
+  // 10. A finalized transaction is not automatically a successful execution.
+  section("10. transaction execution status");
+  check(
+    "a successful execution is accepted",
+    frontend.leaderFailure({
+      consensus_data: {
+        leader_receipt: [{ execution_result: "SUCCESS", result: { status: "return" } }],
+      },
+    }) === null,
+  );
+  check(
+    "an execution error is rejected even when the tx finalized",
+    frontend.leaderFailure({
+      consensus_data: {
+        leader_receipt: [
+          {
+            execution_result: "ERROR",
+            error_code: "CONTRACT_ERROR",
+            result: { status: "error", payload: "[EXPECTED] rejected" },
+          },
+        ],
+      },
+    }) !== null,
+  );
+  check(
+    "a non-return result status is rejected",
+    frontend.leaderFailure({
+      consensus_data: { leader_receipt: [{ execution_result: "SUCCESS", result: { status: "error" } }] },
+    }) !== null,
   );
 
   console.log(`\n${passed} passed, ${failed} failed`);

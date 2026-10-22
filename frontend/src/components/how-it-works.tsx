@@ -15,12 +15,12 @@ const STEPS = [
   {
     icon: Radio,
     title: "Watch the window",
-    body: "Anyone may probe an open slot. Validators fetch independently and agree on UP or DOWN. A monitor may attest a report bound to a digest.",
+    body: "Anyone may probe an open slot. Validators fetch independently and agree on UP or DOWN. A monitor may attest a report bound to the deal, terms, window and a committed digest.",
   },
   {
     icon: Scale,
     title: "Settle, appeal, finalize",
-    body: "Integer-only split. A tentative verdict opens a one-hour bonded appeal; finalize pays the standing verdict.",
+    body: "Integer-only split. A tentative verdict opens a one-hour bonded appeal; evidence closes with the window, then finalize pays the standing verdict.",
   },
 ];
 

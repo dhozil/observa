@@ -7,8 +7,13 @@
  * receipt before this script calls it deployed.
  *
  * Usage:
- *   node deploy/deployScript.ts              # deploy and read it back
- *   node deploy/deployScript.ts --dry-run    # print what it would do
+ *   node deploy/deployScript.ts                    # deploy and read it back
+ *   node deploy/deployScript.ts --dry-run          # print what it would do
+ *   node deploy/deployScript.ts --appeal-window 60 # test/demo copy only
+ *
+ * `--appeal-window` patches only APPEAL_WINDOW_SEC in the deployed source. It
+ * is for a short-lived test/demo instance so the appeal deadline can be crossed
+ * without waiting an hour; production deployments omit it and keep 3600.
  *
  * Observa takes no constructor arguments. Studionet is reached through Node:
  * Cloudflare rejects the Python SDK's User-Agent.
@@ -27,6 +32,11 @@ const KEY_TMP = path.join(ROOT, "scripts", ".deployer.tmp");
 
 const args = parseArgs(process.argv.slice(2));
 const dryRun = args["dry-run"] !== undefined;
+const appealWindow = args["appeal-window"] === undefined ? null : Number(args["appeal-window"]);
+if (appealWindow !== null && (!Number.isInteger(appealWindow) || appealWindow < 1 || appealWindow > 3600)) {
+  console.error("--appeal-window must be an integer between 1 and 3600 seconds");
+  process.exit(1);
+}
 
 function parseArgs(argv: string[]): Record<string, string> {
   const out: Record<string, string> = {};
@@ -82,16 +92,25 @@ async function main() {
   console.log(`deployer   ${client.account.address}`);
   console.log(`balance    ${(Number(await balance()) / 1e18).toFixed(6)} GEN`);
 
-  const source = fs.readFileSync(path.join(ROOT, "contracts", "observa.py"), "utf-8");
+  let source = fs.readFileSync(path.join(ROOT, "contracts", "observa.py"), "utf-8");
+  if (appealWindow !== null) {
+    source = source.replace("APPEAL_WINDOW_SEC = 3600", `APPEAL_WINDOW_SEC = ${appealWindow}`);
+  }
 
   if (dryRun) {
     console.log("\n--dry-run, so nothing will be sent. This would:");
     console.log("  1. deploy contracts/observa.py (no constructor arguments)");
+    if (appealWindow !== null) {
+      console.log(`     test/demo only: APPEAL_WINDOW_SEC patched to ${appealWindow}s`);
+    }
     console.log("  2. read back get_deal_count and get_stats to confirm the deployment is real");
     return;
   }
 
   console.log("\n[1] deploy Observa");
+  if (appealWindow !== null) {
+    console.log(`  test/demo appeal window ${appealWindow}s (source keeps 3600s)`);
+  }
   const created = await deployContract(source, []);
   if (!created.ok) {
     console.error(`  FAILED at ${created.phase}: ${created.reason}`);
@@ -121,10 +140,15 @@ async function main() {
     console.error(`  unexpected protocol config: ${JSON.stringify(config)}`);
     process.exit(1);
   }
+  if (appealWindow !== null && Number(config.appeal_window_sec) !== appealWindow) {
+    console.error(`  appeal window read-back is ${config.appeal_window_sec}, expected ${appealWindow}`);
+    process.exit(1);
+  }
   console.log(`  deals       ${stats.deals}`);
   console.log(`  held_atto   ${stats.held_atto}`);
   console.log(`  conserved   ${stats.conserved}`);
   console.log(`  max_slots   ${config.max_slots}`);
+  console.log(`  appeal_win  ${config.appeal_window_sec}s`);
 
   console.log("\ndeployed. Next:");
   console.log(`  OBSERVA_ADDRESS=${address}`);

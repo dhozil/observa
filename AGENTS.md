@@ -104,7 +104,8 @@ to keep/preserve the escrowed funds).
   `gltest tests/integration -v -s --network studionet`.
 - Integration (incl. the ~2-min wait-out-a-window settle test):
   `gltest tests/integration -v -s -m slow --network studionet`.
-- Deploy: `npm run deploy:dry`, `npm run deploy`; demo: `npm run demo -- --address
+- Deploy: `npm run deploy:dry`, `npm run deploy`; demo/test short window:
+  `npm run deploy -- --appeal-window 60`; demo: `npm run demo -- --address
   0x…`; on-chain verification: `npm run verify`.
 - Frontend contract tests: `npm run test:sync` (offline), `npm run test:frontend`
   (live reads), `npm run test:frontend:write` (revert/phases), and
@@ -115,15 +116,25 @@ to keep/preserve the escrowed funds).
   `npm --prefix frontend run build`, `npm --prefix frontend run lint`.
 
 ## 4. Durable facts / decisions
-- Live Studionet deployment: `0xAD6aCc4Be89dF0C9e246eeF6274D77EA589De17d`
+- Production-style Studionet deployment: `0xAD6aCc4Be89dF0C9e246eeF6274D77EA589De17d`
   (deploy tx `0xd873cfa9f034ea0994f62ef4f8f56e6831f6a0225f194658bf210f6edc05c3f7`);
   it holds demo deals `s1`/`s2`, the frontend `--full` deal `s3`, and E2E
   artifacts `s4..s12` (early rate-limit retries left some
   ACTIVE/FUNDED/RESOLVED/APPEALED; `s12` is the green FINALIZED browser run).
-  `frontend/.env.local` (ignored)
-  points at it.
-- Live frontend: `https://getobserva.vercel.app/` (contract reads work; 12/12
-  records). `https://observa.vercel.app/` is a different, disabled deployment
+  **It predates the 2026-10-22 appeal-deadline guard and report binding.**
+- Current test/demo Studionet deployment (deadline guard + report binding, 60s
+  appeal window): `0xfc00d1B20Fc07E43EdAAf390Bf8C46649741ed9c` (deploy tx
+  `0xafec9b15b60b95e4fd1e67dffc7783329260707cee1784992d5f863c02695c7c`).
+  Deployed with `npm run deploy -- --appeal-window 60` (patches only
+  `APPEAL_WINDOW_SEC`); `frontend/.env.local` points at it. The demo created
+  `s1` (FINALIZED/MET) and `s2` (REFUNDED); frontend guard runs left `s3..s5`
+  APPEALED. The Vercel env must be set to the same address to test the deployed
+  app; otherwise the live site still reads the old 1h instance.
+- Superseded 60s instance (deadline guard only, no report binding):
+  `0xad5dfb1b972C9717cFc7B7460961d051203185E1` (deploy tx
+  `0xdf3aa6c15cb885a4851680f26dc88b9de7e0c0e1a798666d34b67dc0fe5ed102`).
+- Live frontend: `https://getobserva.vercel.app/` (old 1h contract; reads work).
+  `https://observa.vercel.app/` is a different, disabled deployment
   (`403 DEPLOYMENT_DISABLED`), not the live app.
 - First line of the contract pins the runner `1jb45…` (the network rejects
   `test`/`latest`; genvm-lint notes a newer runner but the family stays on `1jb45…`
@@ -142,16 +153,20 @@ to keep/preserve the escrowed funds).
 - Consensus via `gl.vm.run_nondet_unsafe(leader_fn, validator_fn)` with the shared
   `_verify`/`_handle_leader_error` pair.
 - Probe equivalence compares ONLY `s` (`"UP"`/`"DOWN"`). `http`/`reachable` are
-  audit-only. Attestation equivalence compares `uptime_bps` (bytes are already
-  bound by the committed digest).
+  audit-only. Attestation equivalence compares `uptime_bps`; the bytes are bound by
+  the committed digest, and `deal_id`/`service`/`terms_digest`/window are checked
+  against the deal before the reading is accepted.
 - No cron: `probe_slot(deal_id, slot)` is permissionless, one probe per slot, valid
   from `start + slot*slot_seconds` until `+slot_seconds + PROBE_GRACE_SEC`.
   Nobody probes ⇒ nobody observes.
 - Attestation path: the `monitor` named in terms calls `commit_attestation(deal_id,
   digest, nonce)` with `sha256(canonical_json(report))`; then `submit_attestation`
   fetches `attestation_url` and a validator that hashes the fetched report to a
-  different digest rejects it. **There is no on-chain signature check** — the
-  on-chain digest commitment stands in for a signature (trust the monitor).
+  different digest rejects it. The report must also carry `deal_id`, `service`,
+  `terms_digest`, `window_start_unix` and `window_end_unix` matching the deal, so a
+  valid report for another agreement cannot be replayed. **There is no on-chain
+  signature check** - the on-chain digest commitment stands in for a signature
+  (trust the monitor).
 - Settlement source: probes win only when `probed_slots > 0` **and** coverage ≥
   `min_coverage_bps`; otherwise the attested reading is used. A thin sample with no
   attestation is not authoritative, so `settle` reverts and the client can
@@ -175,6 +190,9 @@ to keep/preserve the escrowed funds).
   recorded evidence, so late probes and a corrected attestation count. During an open appeal window (status `RESOLVED` not final, or
   `APPEALED`) `probe_slot`, `commit_attestation` and `submit_attestation` are
   re-admitted — the monitor may publish + re-commit + submit a corrected report.
+  **Both `resolve_appeal` and `finalize` require `now > appeal_deadline_unix`;
+  `finalize` checks the deadline even when `final` is true.** Evidence writes close
+  at the same deadline, so filing an appeal cannot shorten the response window.
   A changed digest clears the previously recorded reading (`attested=False`), because
   it no longer describes the committed bytes. If fresh evidence is unavailable
   (`gl.vm.UserError`), `resolve_appeal`/`finalize` keep the tentative verdict and set
@@ -222,6 +240,10 @@ to keep/preserve the escrowed funds).
   also pass a 24/min shared budget with a 429 cooldown; the deal view no longer
   loads `get_deal_ids`, and the read timeout is 40s. Node/gltest runs are not paced.
   Writes call `refreshAll` on success, so actions still update immediately.
+- Empty states are gated on the id list: `useDeals(null)` means "ids not loaded
+  yet" and stays loading (`enabled: false`), while a loaded empty list resolves to
+  `[]` and shows "The record is empty." Pages pass `ids.data === null ? null : ids`
+  so the empty-state flash before `get_deal_ids` cannot happen.
 - Reads/writes are env-driven: `NEXT_PUBLIC_OBSERVA_ADDRESS` (empty in
   `.env.example`; the live address is in ignored `.env.local`). `isConfigured`
   gates every read/write and the UI shows a setup notice when it is unset. Never
@@ -252,6 +274,9 @@ to keep/preserve the escrowed funds).
 - Browser E2E (`tests/frontendE2E.ts`) uses `playwright-core` with system Chrome
   (no browser download), injects two EIP-6963 providers that sign via viem, runs
   `next start` on port `3100`, and retries both the 30/min and 500/hour limits.
+  It stops at `APPEALED` and asserts Resolve/Finalize are not offered before the
+  deadline. Rebuild after changing `.env.local`: `NEXT_PUBLIC_*` is inlined into
+  the production bundle, so a stale build silently reads the previous contract.
   It treats 404/429 resource errors and GenLayer rate-limit console logs as
   expected environmental noise, not app failures.
 - Studionet: chain id `61999` (`0xf22f`), `https://studio.genlayer.com/api`, GEN 18
@@ -260,11 +285,15 @@ to keep/preserve the escrowed funds).
 - Symmetry rule for slot tests: probes are timed by `slot_seconds`; open/fund/start
   all happen at `BASE_DT`, so slot `i` opens at `BASE_DT + i*slot_seconds`.
 - `settle` no longer moves money. Use `settle_and_finalize(...)` (waits
-  `APPEAL_WINDOW_SEC`) for the un-appealed path, or `file_appeal(...)` +
-  `resolve_appeal` + `finalize` for the bonded path. `settle_and_finalize` confirms
-  all payouts via `confirm_all_payouts`; bond payouts are *not* in
+  `APPEAL_WINDOW_SEC`) for the un-appealed path, or `file_appeal(...)` + warp past
+  the deadline + `resolve_appeal` + `finalize` for the bonded path. `resolve_appeal`
+  reverts before the deadline; `finalize` always checks it. `settle_and_finalize`
+  confirms all payouts via `confirm_all_payouts`; bond payouts are *not* in
   `total_released`/`total_refunded` (escrow split only); `lifetime_outflow` and
   `conserved` verify them.
+- Integration lifecycle tests stage a copy with only `APPEAL_WINDOW_SEC` shortened
+  (30s) so real consensus can finish; direct tests pin the production 3600s value.
+  The staged copy still proves the early-resolve guard.
 - Payout tests set the host contract balance with `sync_contract_balance(...)` to
   `Payout.balance_at_emit - amount_atto` before `confirm_payout`; this simulates the
   child transfer leaving. Integration tests accept a still-`sent` row because the
@@ -315,14 +344,16 @@ Status legend: [x] done · [~] in progress · [ ] planned · [ ]? open question.
 - [x] Coverage-floor and payout-delivery UI: authoritative-evidence badge, thin
   coverage as inconclusive, payout ledger with `owed`/`sent`/`delivered`, retry,
   recover, confirm and pump actions.
-- [x] Tests: `frontendSync.ts` (58 offline checks) + `frontendIntegration.ts`
-  (read-only, `--write`, and `--full`) + `frontendE2E.ts` (20 browser checks).
+- [x] Tests: `frontendSync.ts` (63 offline checks) + `frontendIntegration.ts`
+  (read-only, `--write`, and `--full`) + `frontendE2E.ts` (browser checks; the
+  covered deal now stops at the appeal deadline instead of bypassing it).
 
 ### Phase 4 — Protocol depth (IN PROGRESS)
 - [x] Bonded challenge/appeal round: after a tentative verdict, a party stakes a
   bond and the verdict is re-derived (re-fetched attestation + any late probes);
   loser forfeits the bond. Mirrors `sacramentum`'s appeal mechanics. DONE:
-  `settle → [appeal → resolve_appeal] → finalize`.
+  `settle → [appeal → wait deadline → resolve_appeal] → finalize`. An early
+  `resolve_appeal`/`finalize` is rejected and evidence writes close at the deadline.
 - [x] Coverage authority (P0): probes need `probed_slots > 0` and coverage at or
   above `min_coverage_bps`; thin coverage without an attestation is a lapse refund,
   not a verdict. Direct tests cover the exact floor and one-bps-below cases.
@@ -336,6 +367,11 @@ Status legend: [x] done · [~] in progress · [ ] planned · [ ]? open question.
 - [ ] `expect_status` / status-class policies beyond 2xx (e.g. acceptable 200/204).
 - [ ] Latency SLA: needs tolerance or external attestation — probes cannot measure
   user-perceived latency reliably. Design before coding.
+- [x] Bind the attestation report to the deal (`deal_id`, `service`, terms digest,
+  window start/end) instead of trusting any bytes matching the committed digest.
+  The digest binds bytes; these fields bind the bytes to the agreement. Direct
+  tests cover a report for another deal, a shifted window, and service/terms
+  mismatches.
 - [ ] Third-party monitor allowlist + multiple attestations (median) to reduce
   single-monitor trust. (The appeal bond is the current mitigation.)
 - [ ] Negative-slot semantics: define whether a missed slot counts as UP/DOWN/excluded
@@ -363,6 +399,77 @@ Status legend: [x] done · [~] in progress · [ ] planned · [ ]? open question.
 ## 7. Activity log
 Newest first. One entry per work session: date, what was done, evidence (commands +
 results). Keep it short but concrete.
+
+- **2026-10-23 — Empty-state flash fix (frontend).**
+  - `useDeals(null)` now stays loading instead of resolving `[]` before
+    `get_deal_ids` returns; `useRead` gained an `enabled` gate, and `/` and
+    `/market` pass `ids.data === null ? null : ids` so a loaded empty list still
+    resolves to `[]` and shows the empty state only after the ids are known.
+  - Both pages now surface `ids.error` (previously only `deals.error` was shown).
+  - Evidence: frontend `lint` clean; `next build` green.
+
+- **2026-10-23 — Report binding + steward follow-ups.**
+  - `_attestation_once` now requires `deal_id`, `service`, `terms_digest`,
+    `window_start_unix` and `window_end_unix` to match the deal before accepting
+    `uptime_bps`. A digest binds bytes; these fields bind the bytes to the
+    agreement, so a valid report for another deal/window cannot be replayed.
+  - Added direct regressions for another deal, a shifted window, and service/terms
+    mismatches; `attestation_for(contract, deal_id, ...)` builds a bound report
+    from `get_deal` for every direct test.
+  - Exported `leaderFailure` and added offline sync checks that a finalized tx
+    with an execution error, or a non-`return` result status, is rejected.
+    Strengthened the recovered-payout test assertions.
+  - Deployed the report-binding build (60s appeal) as
+    `0xfc00d1B20Fc07E43EdAAf390Bf8C46649741ed9c` (tx
+    `0xafec9b15b60b95e4fd1e67dffc7783329260707cee1784992d5f863c02695c7c`);
+    `frontend/.env.local` points at it. Demo created `s1` (FINALIZED/MET) and
+    `s2` (REFUNDED).
+  - Evidence: `genvm-lint --json` ok (27 methods); `pytest tests\test_observa.py
+    -q` -> **60 passed**; `pytest tests -q` -> **64 passed, 6 skipped, 1
+    deselected**; `ruff` clean; `npm run test:sync` -> **63 passed**; frontend
+    `lint` clean and `build` green; `test:frontend` -> **18 passed**;
+    `test:frontend:write` -> **22 passed**; `test:frontend:full` -> **40 passed**
+    (deal `s4`, stops at `APPEALED`); browser E2E -> **21 passed** (deal `s5`).
+    The new contract now holds `s1`/`s2` (demo) plus `s3..s5` (guard-test
+    `APPEALED` artifacts).
+  - Next: update the Vercel address, rebuild after that env change, rerun the
+    deployed smoke, and update the portal contract link/How-to. Use the new
+    contract (`s1`/`s2` are the finished demo deals) and note the 60s appeal
+    window in the review instructions.
+
+- **2026-10-22 — Steward fix: appeal deadline cannot be bypassed.**
+  - `resolve_appeal` now reverts until `now > appeal_deadline_unix`, and `finalize`
+    checks the same deadline even when `final` is true. `_monitoring_open` closes
+    probe/attestation writes for `APPEALED` at the deadline, so appealed and
+    unappealed paths share one evidence cutoff.
+  - Added direct regressions: an immediate appeal resolution is rejected and a
+    late attestation commit/submit is rejected after the deadline. Updated the
+    bonded-appeal, late-probe, attestation-refresh, and invariant paths to warp
+    past the deadline before resolving. Also added a payout-recovery test proving
+    a recovered attempt cannot be confirmed after its retry, and the retried row
+    books exactly once.
+  - Frontend: resolve is offered only after the deadline, finalize always waits,
+    and `nextProbeSlot` no longer treats `APPEALED` as open forever. Sync checks
+    now include the appeal-deadline cases.
+  - Integration lifecycle tests stage a copy with only `APPEAL_WINDOW_SEC=30` and
+    prove an immediate resolve is rejected before the full path succeeds. Demo
+    and verify scripts use a fresh 30s-window copy for the quick path; attaching
+    to a production contract waits or stops at the guard instead of bypassing it.
+  - Evidence: `genvm-lint --json` ok; `pytest tests\test_observa.py -q` -> **57
+    passed**; `pytest tests -q` -> **61 passed, 6 skipped, 1 deselected**; `ruff`
+    clean; `npm run test:sync` -> **60 passed**; frontend `lint` clean and `build`
+    green; targeted Studionet bonded appeal -> **1 passed (148.34s)**; slow
+    short-window settle -> **1 passed (209.99s)**.
+  - Deployed a fixed test/demo instance with a 60s appeal window:
+    `0xad5dfb1b972C9717cFc7B7460961d051203185E1`
+    (tx `0xdf3aa6c15cb885a4851680f26dc88b9de7e0c0e1a798666d34b67dc0fe5ed102`);
+    `frontend/.env.local` now points at it. Vercel env update is still pending.
+  - Ran `npm run demo -- --address 0xad5d…`: created `s1` (probe, settle, appeal,
+    early-resolve rejection, 65s wait, resolve, finalize) and `s2` (cancel/refund);
+    read-back is FINALIZED/MET and REFUNDED. `npm run test:frontend` against the
+    60s instance passed **18/18**; `test:frontend:write` passed **22/22**.
+  - Next: set the Vercel address to the 60s instance and rerun the live
+    frontend/E2E paths against it.
 
 - **2026-10-22 — Multi-slot probe UI fix (frontend audit).**
   - Found `nextProbeSlot` only considered `base` and `base - 1`, so after a 3-slot
@@ -584,18 +691,23 @@ results). Keep it short but concrete.
 ## 8. Verified (cumulative)
 - `genvm-lint check contracts/observa.py --json` → ok (3 passed, **27 methods**:
   11 view + 16 write).
-- `python -m pytest tests\test_observa.py -q` → **54 passed** (2026-10-21).
-- `python -m pytest tests -q` → **58 passed, 6 skipped, 1 deselected** (2026-10-21,
-  after adding `tests/test_invariants.py`).
-- `python -m ruff check .` → clean (2026-10-21).
+- `python -m pytest tests\test_observa.py -q` → **60 passed** (2026-10-23, after
+  adding report-binding regressions).
+- `python -m pytest tests -q` → **64 passed, 6 skipped, 1 deselected** (2026-10-23).
+- `python -m ruff check .` → clean (2026-10-22).
 - `gltest tests/integration -v -s --network studionet` → **6 passed** incl. the real
   web-fetch consensus probe and the bonded-appeal lifecycle (2026-10-19, 360.30s;
   predates payout delivery). On 2026-10-21 the updated suite hit Studionet's
   30 req/min limit after the first test; targeted reruns passed the refund and
   bonded-appeal paths (63s, 102s; bonded appeal again 111.73s after P1).
+  On 2026-10-22 the deadline-guard bonded-appeal test passed in 148.34s using a
+  staged 30s appeal window; it also rejected an immediate `resolve_appeal`.
 - `gltest tests/integration -v -s -m slow --network studionet` → **1 passed**: a real
   45s window, probe, tentative settle, bond, re-derive, finalize, payout rows and
-  conservation held (2026-10-21, 149.51s after P1; earlier 155.12s/157.27s).
+  conservation held (2026-10-21, 149.51s after P1; earlier 155.12s/157.27s). Rerun
+  after the deadline guard: **1 passed** (2026-10-22, 209.99s); the first attempt
+  reached `finalize` and failed only on a transient Cloudflare 502 during the final
+  stats read.
 - Frontend: `npm --prefix frontend run lint` clean; `npm --prefix frontend run build`
   green (7 routes; `/deal/[id]` partial-prerender); production server smoke
   `/`, `/market`, `/open`, `/deal/s1` → 200; Chrome screenshots at 1440px and 512px
@@ -603,17 +715,32 @@ results). Keep it short but concrete.
   appeal copy on 2026-10-21: `npm run lint` clean, `npm run build` green. Rebuilt
   again with the live `.env.local`: `npm run lint` clean, `npm run build` green.
   Rebuilt after trimming deal polling to 30s/60s/120s: `npm run lint` clean,
-  `npm run build` green.
+  `npm run build` green. Rebuilt again after the empty-state gate: `npm run lint`
+  clean, `npm run build` green.
 - Deploy tooling (2026-10-21): `node deploy/deployScript.ts --dry-run` ok; real
   deploy `0xAD6aCc4Be89dF0C9e246eeF6274D77EA589De17d`; `node deploy/demoScript.ts`
   created `s1`/`s2` and printed `MET`, refund, payout rows and invariants;
   `node deploy/verifyScript.ts` fresh-deployed `0xC14ab3…38af` and passed
-  **26/26**, including delivered refund, provider and bond rows.
-- Frontend contract tests: `npm run test:sync` -> **58 passed** (2026-10-22);
-  `test:frontend` -> **18 passed**; `test:frontend:write` -> **22 passed**;
-  `test:frontend:full` -> **42 passed** (new deal `s3`, full escrow/appeal path).
-- Browser E2E (2026-10-21): `npm run test:frontend:e2e` -> **20 passed, 0 failed**
-  (deal `s12`, FINALIZED after a bonded appeal), with the reduced polling budget.
+  **26/26**, including delivered refund, provider and bond rows. On 2026-10-22,
+  `npm run deploy -- --appeal-window 60` deployed the deadline-guard build as
+  `0xad5dfb1b972C9717cFc7B7460961d051203185E1` and read back
+  `appeal_window_sec=60`, `deals=0`, `held_atto=0`, `conserved=true`. On
+  2026-10-23 the report-binding build was deployed as
+  `0xfc00d1B20Fc07E43EdAAf390Bf8C46649741ed9c` (tx
+  `0xafec9b15b60b95e4fd1e67dffc7783329260707cee1784992d5f863c02695c7c`) with
+  the same 60s read-back; the demo created `s1` (FINALIZED/MET) and `s2`
+  (REFUNDED).
+- Frontend contract tests: `npm run test:sync` -> **63 passed** (2026-10-23);
+  `test:frontend` -> **18 passed** against
+  `0xfc00d1B20Fc07E43EdAAf390Bf8C46649741ed9c`; `test:frontend:write` ->
+  **22 passed** against it; `test:frontend:full` -> **40 passed, 0 failed**
+  (deal `s4`, stops at `APPEALED` and proves early resolve/finalize are rejected).
+  The full test now compares held value as a delta so pre-existing pending
+  payouts do not break it.
+- Browser E2E (2026-10-23): `npm run test:frontend:e2e` -> **21 passed, 0 failed**
+  (deal `s5`, same 60s contract, stops at `APPEALED`). Rebuild before E2E after
+  changing `.env.local`: `NEXT_PUBLIC_*` is baked into the production build, so a
+  stale build can silently point the browser at the previous contract.
 
 ## 9. Trust model / known risks (keep visible)
 - Slot probes trust the committee's fetch at slot times; a slot nobody probes on
@@ -622,8 +749,10 @@ results). Keep it short but concrete.
 - The attestation path trusts the named monitor; there is no on-chain signature
   check (see open question above). The monitor may re-commit a corrected report
   during the appeal window, so it can still change the reading before finalize; the
-  digest binding prevents using bytes other than the committed ones, not a
-  misbehaving monitor. Multiple monitors/median remains future work.
+  digest binding prevents using bytes other than the committed ones, and the
+  deal/service/terms/window fields prevent replaying a valid report for another
+  agreement. It does not stop a misbehaving monitor. Multiple monitors/median
+  remain future work.
 - A health endpoint ≠ real user experience. Prefer probing the real service route;
   the bonded appeal (Phase 4) is the implemented mitigation for contested readings.
 
@@ -661,8 +790,9 @@ three "known risks" without further research.
    untrusted surfaces are the probe response and the attestation JSON. Probes read
    only the HTTP status and derive a boolean/`"UP"`/`"DOWN"`; no body text is stored
    or interpreted. Attestations must be a JSON object whose canonical bytes hash to
-   the committed digest, and only `uptime_bps` (clamped to 0..10000) plus a clipped
-   nonce are read. Terms are untrusted input but are validated into scalars before
+   the committed digest and whose deal/service/terms/window fields match the deal;
+   `uptime_bps` (clamped to 0..10000) is recorded and the nonce is clipped. Terms
+   are untrusted input but are validated into scalars before
    storage. **Residual boundary:** `endpoint` and `attestation_url` are arbitrary
    HTTPS URLs supplied by the parties, so validators can be made to fetch a
    host/port of the client's choosing (an SSRF-style reachability probe). Keep the

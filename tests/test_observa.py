@@ -18,7 +18,7 @@ from conftest import (
     WINDOW_SECONDS,
     active_deal,
     at,
-    attestation_report,
+    attestation_for,
     confirm_all_payouts,
     file_appeal,
     hx,
@@ -299,7 +299,7 @@ def test_commit_attestation_needs_a_monitor(warp, direct_vm, direct_deploy, dire
 def test_submit_attestation_records_the_uptime(warp, direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie):
     contract = direct_deploy(CONTRACT)
     deal_id = active_deal(direct_vm, contract, direct_alice, direct_bob, terms=sla_terms(monitor=direct_charlie))
-    report = attestation_report(9600, "n1")
+    report = attestation_for(contract, deal_id, 9600, "n1")
     direct_vm.sender = direct_charlie
     contract.commit_attestation(deal_id, report_digest(report), "n1")
 
@@ -317,19 +317,78 @@ def test_submit_attestation_records_the_uptime(warp, direct_vm, direct_deploy, d
 def test_submit_attestation_rejects_a_digest_mismatch(warp, direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie):
     contract = direct_deploy(CONTRACT)
     deal_id = active_deal(direct_vm, contract, direct_alice, direct_bob, terms=sla_terms(monitor=direct_charlie))
-    committed = attestation_report(10000, "n1")
+    committed = attestation_for(contract, deal_id, 10000, "n1")
     direct_vm.sender = direct_charlie
     contract.commit_attestation(deal_id, report_digest(committed), "n1")
 
-    mock_attestation(direct_vm, attestation_report(10000, "tampered"))
+    mock_attestation(direct_vm, attestation_for(contract, deal_id, 10000, "tampered"))
     with direct_vm.expect_revert("does not match the committed digest"):
+        contract.submit_attestation(deal_id)
+
+
+def test_submit_attestation_rejects_a_report_for_another_deal(
+    warp, direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie
+):
+    contract = direct_deploy(CONTRACT)
+    first = active_deal(
+        direct_vm, contract, direct_alice, direct_bob, terms=sla_terms(monitor=direct_charlie)
+    )
+    second = active_deal(
+        direct_vm, contract, direct_alice, direct_bob, terms=sla_terms(monitor=direct_charlie)
+    )
+    report = attestation_for(contract, first, 10000, "n1")
+    direct_vm.sender = direct_charlie
+    contract.commit_attestation(second, report_digest(report), "n1")
+    mock_attestation(direct_vm, report)
+    with direct_vm.expect_revert("different deal"):
+        contract.submit_attestation(second)
+
+
+def test_submit_attestation_rejects_a_report_outside_the_agreement_window(
+    warp, direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie
+):
+    contract = direct_deploy(CONTRACT)
+    deal_id = active_deal(
+        direct_vm, contract, direct_alice, direct_bob, terms=sla_terms(monitor=direct_charlie)
+    )
+    report = attestation_for(contract, deal_id, 10000, "n1")
+    report["window_end_unix"] += 1
+    direct_vm.sender = direct_charlie
+    contract.commit_attestation(deal_id, report_digest(report), "n1")
+    mock_attestation(direct_vm, report)
+    with direct_vm.expect_revert("window does not match"):
+        contract.submit_attestation(deal_id)
+
+
+def test_submit_attestation_rejects_service_and_terms_mismatches(
+    warp, direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie
+):
+    contract = direct_deploy(CONTRACT)
+    deal_id = active_deal(
+        direct_vm, contract, direct_alice, direct_bob, terms=sla_terms(monitor=direct_charlie)
+    )
+    direct_vm.sender = direct_charlie
+
+    report = attestation_for(contract, deal_id, 10000, "n1")
+    report["service"] = "Another Service"
+    contract.commit_attestation(deal_id, report_digest(report), "n1")
+    mock_attestation(direct_vm, report)
+    with direct_vm.expect_revert("service does not match"):
+        contract.submit_attestation(deal_id)
+
+    report = attestation_for(contract, deal_id, 10000, "n2")
+    report["terms_digest"] = "0" * 64
+    contract.commit_attestation(deal_id, report_digest(report), "n2")
+    direct_vm.clear_mocks()
+    mock_attestation(direct_vm, report)
+    with direct_vm.expect_revert("terms digest does not match"):
         contract.submit_attestation(deal_id)
 
 
 def test_attestation_validator_agrees_and_rejects(warp, direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie):
     contract = direct_deploy(CONTRACT)
     deal_id = active_deal(direct_vm, contract, direct_alice, direct_bob, terms=sla_terms(monitor=direct_charlie))
-    report = attestation_report(9700, "n1")
+    report = attestation_for(contract, deal_id, 9700, "n1")
     direct_vm.sender = direct_charlie
     contract.commit_attestation(deal_id, report_digest(report), "n1")
     mock_attestation(direct_vm, report)
@@ -344,7 +403,7 @@ def test_attestation_validator_agrees_and_rejects(warp, direct_vm, direct_deploy
 def test_attestation_validator_agrees_on_a_transient_failure(warp, direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie):
     contract = direct_deploy(CONTRACT)
     deal_id = active_deal(direct_vm, contract, direct_alice, direct_bob, terms=sla_terms(monitor=direct_charlie))
-    report = attestation_report(9700, "n1")
+    report = attestation_for(contract, deal_id, 9700, "n1")
     direct_vm.sender = direct_charlie
     contract.commit_attestation(deal_id, report_digest(report), "n1")
     mock_attestation(direct_vm, report)
@@ -481,7 +540,7 @@ def test_settle_zero_uptime_refunds_the_client(warp, direct_vm, direct_deploy, d
 def test_settle_uses_attestation_when_coverage_is_thin(warp, direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie):
     contract = direct_deploy(CONTRACT)
     deal_id = active_deal(direct_vm, contract, direct_alice, direct_bob, terms=sla_terms(monitor=direct_charlie))
-    report = attestation_report(10000, "n1")
+    report = attestation_for(contract, deal_id, 10000, "n1")
     direct_vm.sender = direct_charlie
     contract.commit_attestation(deal_id, report_digest(report), "n1")
     mock_attestation(direct_vm, report)
@@ -500,7 +559,7 @@ def test_settle_uses_attestation_when_coverage_is_thin(warp, direct_vm, direct_d
 def test_settle_prefers_probes_when_coverage_is_sufficient(warp, direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie):
     contract = direct_deploy(CONTRACT)
     deal_id = active_deal(direct_vm, contract, direct_alice, direct_bob, terms=sla_terms(monitor=direct_charlie))
-    report = attestation_report(2000, "n1")
+    report = attestation_for(contract, deal_id, 2000, "n1")
     direct_vm.sender = direct_charlie
     contract.commit_attestation(deal_id, report_digest(report), "n1")
     mock_attestation(direct_vm, report)
@@ -620,6 +679,57 @@ def test_finalize_without_a_verdict_reverts(warp, direct_vm, direct_deploy, dire
         contract.finalize(deal_id)
 
 
+def test_appeal_cannot_resolve_before_the_window_closes(warp, direct_vm, direct_deploy, direct_alice, direct_bob):
+    """Filing and immediately resolving must not lock the verdict early."""
+    contract = direct_deploy(CONTRACT)
+    deal_id = active_deal(direct_vm, contract, direct_alice, direct_bob)
+    run_probes(direct_vm, contract, deal_id, [200, 200, 200, 200])
+    direct_vm.warp(at(WINDOW_SECONDS))
+    contract.settle(deal_id)
+
+    file_appeal(direct_vm, contract, direct_alice, deal_id)
+    with direct_vm.expect_revert("still open"):
+        contract.resolve_appeal(deal_id)
+    with direct_vm.expect_revert("no standing verdict"):
+        contract.finalize(deal_id)
+
+    view = deal(contract, deal_id)
+    assert view["status"] == "APPEALED"
+    assert view["final"] is False
+    assert stats(contract)["held_atto"] == str(ESCROW + APPEAL_BOND)
+
+    direct_vm.warp(at(WINDOW_SECONDS + APPEAL_WINDOW_SEC + 1))
+    contract.resolve_appeal(deal_id)
+    assert deal(contract, deal_id)["final"] is True
+    contract.finalize(deal_id)
+
+
+def test_attestation_writes_close_at_the_appeal_deadline(
+    warp, direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie
+):
+    contract = direct_deploy(CONTRACT)
+    deal_id = active_deal(
+        direct_vm, contract, direct_alice, direct_bob, terms=sla_terms(monitor=direct_charlie)
+    )
+    report = attestation_for(contract, deal_id, 10000, "n1")
+    direct_vm.sender = direct_charlie
+    contract.commit_attestation(deal_id, report_digest(report), "n1")
+    mock_attestation(direct_vm, report)
+    contract.submit_attestation(deal_id)
+
+    direct_vm.warp(at(WINDOW_SECONDS))
+    contract.settle(deal_id)
+    file_appeal(direct_vm, contract, direct_alice, deal_id)
+    direct_vm.warp(at(WINDOW_SECONDS + APPEAL_WINDOW_SEC + 1))
+
+    direct_vm.sender = direct_charlie
+    corrected = attestation_for(contract, deal_id, 5000, "n2")
+    with direct_vm.expect_revert("is not active"):
+        contract.commit_attestation(deal_id, report_digest(corrected), "n2")
+    with direct_vm.expect_revert("is not active"):
+        contract.submit_attestation(deal_id)
+
+
 def test_losing_appeal_forfeits_the_bond(warp, direct_vm, direct_deploy, direct_alice, direct_bob):
     """The client appeals an already-full release; nothing changes, so it loses the bond."""
     contract = direct_deploy(CONTRACT)
@@ -632,10 +742,10 @@ def test_losing_appeal_forfeits_the_bond(warp, direct_vm, direct_deploy, direct_
     assert deal(contract, deal_id)["status"] == "APPEALED"
     assert stats(contract)["held_atto"] == str(ESCROW + APPEAL_BOND)
 
+    direct_vm.warp(at(WINDOW_SECONDS + APPEAL_WINDOW_SEC + 1))
     contract.resolve_appeal(deal_id)
     assert deal(contract, deal_id)["final"] is True
 
-    direct_vm.warp(at(WINDOW_SECONDS + APPEAL_WINDOW_SEC + 1))
     contract.finalize(deal_id)
     confirm_all_payouts(direct_vm, contract, deal_id)
     report = stats(contract)
@@ -672,6 +782,7 @@ def test_late_probe_then_appeal_moves_the_verdict_and_returns_the_bond(warp, dir
     mock_probe(direct_vm, status=503)
     contract.probe_slot(deal_id, 3)
     file_appeal(direct_vm, contract, direct_alice, deal_id)
+    direct_vm.warp(at(WINDOW_SECONDS + APPEAL_WINDOW_SEC + 1))
     contract.resolve_appeal(deal_id)
 
     view = deal(contract, deal_id)
@@ -680,7 +791,6 @@ def test_late_probe_then_appeal_moves_the_verdict_and_returns_the_bond(warp, dir
     assert view["release_bps"] == 5050
     assert view["final"] is True
 
-    direct_vm.warp(at(WINDOW_SECONDS + APPEAL_WINDOW_SEC + 1))
     contract.finalize(deal_id)
     confirm_all_payouts(direct_vm, contract, deal_id)
     provider_cut = ESCROW * 5050 // 10000
@@ -728,7 +838,7 @@ def test_resolve_appeal_refreshes_a_recommitted_attestation(warp, direct_vm, dir
     contract = direct_deploy(CONTRACT)
     deal_id = active_deal(direct_vm, contract, direct_alice, direct_bob, terms=sla_terms(monitor=direct_charlie))
 
-    good = attestation_report(10000, "n1")
+    good = attestation_for(contract, deal_id, 10000, "n1")
     direct_vm.sender = direct_charlie
     contract.commit_attestation(deal_id, report_digest(good), "n1")
     mock_attestation(direct_vm, good)
@@ -741,12 +851,13 @@ def test_resolve_appeal_refreshes_a_recommitted_attestation(warp, direct_vm, dir
 
     # During the appeal the monitor publishes a corrected report and re-commits.
     direct_vm.sender = direct_charlie
-    corrected = attestation_report(5000, "n2")
+    corrected = attestation_for(contract, deal_id, 5000, "n2")
     contract.commit_attestation(deal_id, report_digest(corrected), "n2")
     direct_vm.clear_mocks()
     mock_attestation(direct_vm, corrected)
 
     file_appeal(direct_vm, contract, direct_alice, deal_id)
+    direct_vm.warp(at(WINDOW_SECONDS + APPEAL_WINDOW_SEC + 1))
     contract.resolve_appeal(deal_id)
 
     view = deal(contract, deal_id)
@@ -763,14 +874,14 @@ def test_recommit_clears_the_old_reading_until_resubmitted(
     deal_id = active_deal(
         direct_vm, contract, direct_alice, direct_bob, terms=sla_terms(monitor=direct_charlie)
     )
-    good = attestation_report(10000, "n1")
+    good = attestation_for(contract, deal_id, 10000, "n1")
     direct_vm.sender = direct_charlie
     contract.commit_attestation(deal_id, report_digest(good), "n1")
     mock_attestation(direct_vm, good)
     contract.submit_attestation(deal_id)
     assert audit(contract, deal_id)["attested"] is True
 
-    corrected = attestation_report(5000, "n2")
+    corrected = attestation_for(contract, deal_id, 5000, "n2")
     contract.commit_attestation(deal_id, report_digest(corrected), "n2")
     view = audit(contract, deal_id)
     assert view["attested"] is False
@@ -790,7 +901,7 @@ def test_resolve_appeal_keeps_the_verdict_and_returns_the_bond_when_the_source_i
     deal_id = active_deal(
         direct_vm, contract, direct_alice, direct_bob, terms=sla_terms(monitor=direct_charlie)
     )
-    report = attestation_report(10000, "n1")
+    report = attestation_for(contract, deal_id, 10000, "n1")
     direct_vm.sender = direct_charlie
     contract.commit_attestation(deal_id, report_digest(report), "n1")
     mock_attestation(direct_vm, report)
@@ -803,7 +914,7 @@ def test_resolve_appeal_keeps_the_verdict_and_returns_the_bond_when_the_source_i
     assert stats(contract)["held_atto"] == str(ESCROW + APPEAL_BOND)
 
     direct_vm.sender = direct_charlie
-    corrected = attestation_report(5000, "n2")
+    corrected = attestation_for(contract, deal_id, 5000, "n2")
     contract.commit_attestation(deal_id, report_digest(corrected), "n2")
     direct_vm.clear_mocks()
     mock_attestation(direct_vm, corrected)
@@ -812,6 +923,7 @@ def test_resolve_appeal_keeps_the_verdict_and_returns_the_bond_when_the_source_i
 
     direct_vm.clear_mocks()
     mock_attestation(direct_vm, corrected, status=503)
+    direct_vm.warp(at(WINDOW_SECONDS + APPEAL_WINDOW_SEC + 1))
     contract.resolve_appeal(deal_id)
 
     view = deal(contract, deal_id)
@@ -819,7 +931,6 @@ def test_resolve_appeal_keeps_the_verdict_and_returns_the_bond_when_the_source_i
     assert view["release_bps"] == 10000
     assert view["appeal_evidence_unavailable"] is True
 
-    direct_vm.warp(at(WINDOW_SECONDS + APPEAL_WINDOW_SEC + 1))
     contract.finalize(deal_id)
     confirm_all_payouts(direct_vm, contract, deal_id)
 
@@ -839,7 +950,7 @@ def test_finalize_uses_a_corrected_attestation_without_an_appeal(
     deal_id = active_deal(
         direct_vm, contract, direct_alice, direct_bob, terms=sla_terms(monitor=direct_charlie)
     )
-    good = attestation_report(10000, "n1")
+    good = attestation_for(contract, deal_id, 10000, "n1")
     direct_vm.sender = direct_charlie
     contract.commit_attestation(deal_id, report_digest(good), "n1")
     mock_attestation(direct_vm, good)
@@ -849,7 +960,7 @@ def test_finalize_uses_a_corrected_attestation_without_an_appeal(
     contract.settle(deal_id)
     assert deal(contract, deal_id)["release_bps"] == 10000
 
-    corrected = attestation_report(5000, "n2")
+    corrected = attestation_for(contract, deal_id, 5000, "n2")
     contract.commit_attestation(deal_id, report_digest(corrected), "n2")
     direct_vm.clear_mocks()
     mock_attestation(direct_vm, corrected)
@@ -871,7 +982,7 @@ def test_finalize_falls_back_instead_of_getting_stuck_on_a_dead_source(
     deal_id = active_deal(
         direct_vm, contract, direct_alice, direct_bob, terms=sla_terms(monitor=direct_charlie)
     )
-    good = attestation_report(10000, "n1")
+    good = attestation_for(contract, deal_id, 10000, "n1")
     direct_vm.sender = direct_charlie
     contract.commit_attestation(deal_id, report_digest(good), "n1")
     mock_attestation(direct_vm, good)
@@ -879,7 +990,7 @@ def test_finalize_falls_back_instead_of_getting_stuck_on_a_dead_source(
 
     direct_vm.warp(at(WINDOW_SECONDS))
     contract.settle(deal_id)
-    corrected = attestation_report(5000, "n2")
+    corrected = attestation_for(contract, deal_id, 5000, "n2")
     contract.commit_attestation(deal_id, report_digest(corrected), "n2")
     direct_vm.clear_mocks()
     mock_attestation(direct_vm, corrected, status=503)
@@ -1043,6 +1154,48 @@ def test_recover_payout_waits_for_grace_and_returns_an_undelivered_attempt(
     direct_vm.deal(direct_vm._contract_address, 0)
     contract.confirm_payout(deal_id, "provider")
     assert stats(contract)["total_released_atto"] == str(ESCROW)
+
+
+def test_a_recovered_attempt_cannot_book_after_the_retry(
+    warp, direct_vm, direct_deploy, direct_alice, direct_bob
+):
+    """The first attempt is dead once recovered; only the retried one may book."""
+    contract = direct_deploy(CONTRACT)
+    deal_id = active_deal(direct_vm, contract, direct_alice, direct_bob)
+    run_probes(direct_vm, contract, deal_id, [200, 200, 200, 200])
+    direct_vm.warp(at(WINDOW_SECONDS))
+    contract.settle(deal_id)
+    direct_vm.warp(at(WINDOW_SECONDS + APPEAL_WINDOW_SEC + 1))
+    contract.finalize(deal_id)
+    assert payouts(contract, deal_id)[0]["state"] == "sent"
+
+    direct_vm.warp(at(WINDOW_SECONDS + APPEAL_WINDOW_SEC + 1 + 3600 + 1))
+    contract.recover_payout(deal_id, "provider")
+    # Even if the recovered child transfer lands late, there is no attempt left
+    # to confirm; only a fresh retry can create a new ledger entry.
+    direct_vm.deal(direct_vm._contract_address, 0)
+    with direct_vm.expect_revert("has no attempt to confirm"):
+        contract.confirm_payout(deal_id, "provider")
+    recovered = stats(contract)
+    assert recovered["total_released_atto"] == "0"
+    assert recovered["unreconciled_payouts"] == 0
+
+    # The ledger still owes the escrow, so the retry must emit from a funded host.
+    direct_vm.deal(direct_vm._contract_address, ESCROW)
+    direct_vm.sender = direct_bob
+    contract.retry_payout(deal_id, "provider")
+    direct_vm.deal(direct_vm._contract_address, 0)
+    contract.confirm_payout(deal_id, "provider")
+
+    report = stats(contract)
+    assert report["total_released_atto"] == str(ESCROW)
+    assert report["lifetime_outflow_atto"] == str(ESCROW)
+    assert report["pending_payouts"] == 0
+    assert report["unreconciled_payouts"] == 0
+    assert report["conserved"] is True
+    assert deal(contract, deal_id)["paid_atto"] == str(ESCROW)
+    with direct_vm.expect_revert("is not awaiting a retry"):
+        contract.retry_payout(deal_id, "provider")
 
 
 def test_recover_refuses_a_delivered_payout(
