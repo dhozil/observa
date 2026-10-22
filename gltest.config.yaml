@@ -1,0 +1,14 @@
+# Test network configuration for the GenLayer Testing Suite.
+#
+# This file deliberately declares no `networks:` block. Declaring one REPLACES
+# the built-in presets instead of extending them, which makes
+# `gltest --network studionet` fail with "Unknown network". The presets are
+# already correct: localnet is http://127.0.0.1:4000/api and studionet is
+# https://studio.genlayer.com/api (chain id 61999). Choose the network with
+#
+#     gltest tests/integration -v -s --network studionet
+#
+# The only setting here is where gltest looks for contract source.
+paths:
+  contracts: contracts
+  artifacts: artifacts

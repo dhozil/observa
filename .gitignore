@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+.venv/
+venv/
+
+# Node (deploy drivers)
+node_modules/
+
+# Next.js / Vercel
+.next/
+.vercel/
+
+# Test artifacts
+frontend-e2e-*.png
+*.log
+
+# GenLayer test tooling
+artifacts/
+contracts/.integration/
+.gltest-release-cache.json
+
+# Env / secrets
+.env
+.env.*
+*.env
+!*.env.example
+*.key
+scripts/.deployer.tmp
+
+# OS
+.DS_Store
+Thumbs.db

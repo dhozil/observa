@@ -1,0 +1,24 @@
+{
+  "name": "observa",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Observa: an agentic SLA escrow on GenLayer, with Studionet deploy drivers.",
+  "scripts": {
+    "deploy": "node deploy/deployScript.ts",
+    "deploy:dry": "node deploy/deployScript.ts --dry-run",
+    "demo": "node deploy/demoScript.ts",
+    "verify": "node deploy/verifyScript.ts",
+    "test:sync": "node tests/frontendSync.ts",
+    "test:frontend": "node tests/frontendIntegration.ts",
+    "test:frontend:write": "node tests/frontendIntegration.ts --write",
+    "test:frontend:full": "node tests/frontendIntegration.ts --full",
+    "test:frontend:e2e": "node tests/frontendE2E.ts"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.64.1"
+  }
+}
