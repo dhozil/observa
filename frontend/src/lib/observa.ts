@@ -315,6 +315,54 @@ export function isLapsed(deal: Deal, now: number): boolean {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/**
+ * Studionet allows ~30 requests per minute. A deal view needs several reads at
+ * once, so pace browser reads below that ceiling instead of letting genlayer-js
+ * discover it with 429s. Test/Node runs are not paced (they use their own rails).
+ */
+const READ_BUDGET = 24;
+const READ_WINDOW_MS = 60_000;
+const readStamps: number[] = [];
+let readCooldownUntil = 0;
+
+async function waitForReadBudget(): Promise<void> {
+  if (typeof window === "undefined") return;
+  for (;;) {
+    const now = Date.now();
+    if (readCooldownUntil > now) {
+      await sleep(readCooldownUntil - now);
+      continue;
+    }
+    while (readStamps.length > 0 && now - readStamps[0] >= READ_WINDOW_MS) {
+      readStamps.shift();
+    }
+    if (readStamps.length < READ_BUDGET) {
+      readStamps.push(now);
+      return;
+    }
+    await sleep(readStamps[0] + READ_WINDOW_MS - now + 100);
+  }
+}
+
+function cooldownReads(ms: number): void {
+  if (typeof window === "undefined") return;
+  readCooldownUntil = Math.max(readCooldownUntil, Date.now() + ms);
+}
+
+function rateLimitDelay(error: unknown): number {
+  let raw = "";
+  try {
+    raw = JSON.stringify(error);
+  } catch {
+    raw = "";
+  }
+  const text = `${messageOf(error)} ${raw}`;
+  if (!/rate limit|-32029|retry_after|too many requests/i.test(text)) return 0;
+  const match = text.match(/retry_after_seconds["']?\s*[:=]\s*(\d+)/i);
+  const seconds = match ? Number(match[1]) : 0;
+  return Math.min(Math.max(seconds * 1_000, 4_000), 20_000);
+}
+
 export function messageOf(error: unknown): string {
   if (error instanceof Error) {
     const cause = (error as { cause?: { message?: string } }).cause;
@@ -352,12 +400,22 @@ async function readJson<T>(client: Client, functionName: string, args: unknown[]
     );
   }
   let lastError: unknown;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    await waitForReadBudget();
     try {
       const raw = await client.readContract({ address: ADDRESS, functionName, args });
       return JSON.parse(String(raw)) as T;
     } catch (error) {
       lastError = error;
+      const rateDelay = rateLimitDelay(error);
+      if (rateDelay > 0) {
+        cooldownReads(rateDelay);
+        if (attempt < 1) {
+          await sleep(rateDelay);
+          continue;
+        }
+        throw error;
+      }
       if (!isReadRetryable(error)) throw error;
       await sleep(1200 * (attempt + 1));
     }

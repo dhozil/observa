@@ -33,7 +33,6 @@ import { useNow } from "@/hooks/use-now";
 import {
   useAudit,
   useDeal,
-  useDealIds,
   useLog,
   useMonitorLog,
   usePayouts,
@@ -113,7 +112,6 @@ export function DealView() {
   const auditState = useAudit(id, SUPPORT_POLL_MS);
   const payoutState = usePayouts(id, PAYOUT_POLL_MS);
   const events = useLog(id);
-  const allIds = useDealIds();
 
   const refreshDeal = dealState.refresh;
   const refreshTerms = termsState.refresh;
@@ -121,7 +119,6 @@ export function DealView() {
   const refreshAudit = auditState.refresh;
   const refreshPayouts = payoutState.refresh;
   const refreshEvents = events.refresh;
-  const refreshIds = allIds.refresh;
 
   const refreshAll = React.useCallback(() => {
     refreshDeal();
@@ -130,7 +127,6 @@ export function DealView() {
     refreshAudit();
     refreshPayouts();
     refreshEvents();
-    refreshIds();
   }, [
     refreshDeal,
     refreshTerms,
@@ -138,7 +134,6 @@ export function DealView() {
     refreshAudit,
     refreshPayouts,
     refreshEvents,
-    refreshIds,
   ]);
 
   if (!dealState.data && dealState.error) {

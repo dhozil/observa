@@ -13,7 +13,7 @@ interface AsyncState<T> {
 }
 
 /** A read that never settles would otherwise leave the page spinning forever. */
-const READ_TIMEOUT_MS = 20000;
+const READ_TIMEOUT_MS = 40000;
 const READ_TIMEOUT_MESSAGE =
   "The node did not answer in time. Check your connection, then refresh.";
 

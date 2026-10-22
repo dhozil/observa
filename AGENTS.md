@@ -215,8 +215,10 @@ to keep/preserve the escrowed funds).
 - Chrome headless enforces a **~512px minimum viewport width**. Use 512px for the
   small layout; `--window-size=390` is cropped, not a real 390px render.
 - Deal polling is budgeted for Studionet: status every 30s, payouts every 60s,
-  audit every 120s (the old 3 x 20s alone exceeded the 500/hour cap). Writes call
-  `refreshAll` on success, so actions still update immediately.
+  audit every 120s (the old 3 x 20s alone exceeded the 500/hour cap). Browser reads
+  also pass a 24/min shared budget with a 429 cooldown; the deal view no longer
+  loads `get_deal_ids`, and the read timeout is 40s. Node/gltest runs are not paced.
+  Writes call `refreshAll` on success, so actions still update immediately.
 - Reads/writes are env-driven: `NEXT_PUBLIC_OBSERVA_ADDRESS` (empty in
   `.env.example`; the live address is in ignored `.env.local`). `isConfigured`
   gates every read/write and the UI shows a setup notice when it is unset. Never
@@ -358,6 +360,14 @@ Status legend: [x] done · [~] in progress · [ ] planned · [ ]? open question.
 ## 7. Activity log
 Newest first. One entry per work session: date, what was done, evidence (commands +
 results). Keep it short but concrete.
+
+- **2026-10-21 — Browser read pacing (429 console noise).**
+  - Added a browser-only 24/min read budget with a shared 429 cooldown, so a
+    multi-hook page load cannot burst past Studionet's 30/min ceiling. Node/gltest
+    reads stay unpaced.
+  - Dropped the unused `get_deal_ids` read from the deal view and raised the read
+    timeout to 40s; 429 retries are capped at one backoff to avoid log storms.
+  - Evidence: frontend `lint` clean; `build` green.
 
 - **2026-10-21 — Browser E2E + Studionet rate-limit budget.**
   - Added `tests/frontendE2E.ts` and `npm run test:frontend:e2e`: the production
