@@ -300,9 +300,24 @@ async function main() {
     String(frontend.appealBondFor(4n * 10n ** 18n)),
   );
   check(
-    "nextProbeSlot finds the current slot",
-    frontend.nextProbeSlot({ ...baseDeal, status: "ACTIVE" }, [null, null, null, null], 1010) === 1,
+    "nextProbeSlot finds the oldest open slot",
+    frontend.nextProbeSlot({ ...baseDeal, status: "ACTIVE" }, [null, null, null, null], 1010) === 0,
     String(frontend.nextProbeSlot({ ...baseDeal, status: "ACTIVE" }, [null, null, null, null], 1010)),
+  );
+  check(
+    "nextProbeSlot still finds grace slots after the window",
+    frontend.nextProbeSlot({ ...baseDeal, status: "ACTIVE" }, [null, null, null, null], 1050) === 0,
+    String(frontend.nextProbeSlot({ ...baseDeal, status: "ACTIVE" }, [null, null, null, null], 1050)),
+  );
+  check(
+    "nextProbeSlot skips already probed grace slots",
+    frontend.nextProbeSlot({ ...baseDeal, status: "ACTIVE" }, [{ s: "UP", http: 200 }, null, null, null], 1050) === 1,
+    String(frontend.nextProbeSlot({ ...baseDeal, status: "ACTIVE" }, [{ s: "UP", http: 200 }, null, null, null], 1050)),
+  );
+  check(
+    "nextProbeSlot returns null after every grace window",
+    frontend.nextProbeSlot({ ...baseDeal, status: "ACTIVE" }, [null, null, null, null], 1400) === null,
+    String(frontend.nextProbeSlot({ ...baseDeal, status: "ACTIVE" }, [null, null, null, null], 1400)),
   );
 
   // 9. The browser digest must match Python's canonical JSON.

@@ -275,8 +275,8 @@ export function probeWindow(deal: Deal, index: number) {
 }
 
 /**
- * The slot a keeper could probe right now: the current slot, or the previous
- * one while it is still inside its grace. Returns null when nothing is open.
+ * The oldest slot a keeper can still fill, so a late probe does not strand
+ * earlier slots that remain inside their grace. Returns null when none are open.
  */
 export function nextProbeSlot(
   deal: Deal,
@@ -288,9 +288,7 @@ export function nextProbeSlot(
     deal.status === "APPEALED" ||
     (deal.status === "RESOLVED" && !deal.final && now <= deal.appeal_deadline_unix);
   if (!monitoringOpen || !deal.slot_seconds) return null;
-  const base = Math.floor((now - deal.started_at_unix) / deal.slot_seconds);
-  for (const index of [base, base - 1]) {
-    if (index < 0 || index >= deal.slots) continue;
+  for (let index = 0; index < deal.slots; index += 1) {
     if (log[index]) continue;
     const { start, close } = probeWindow(deal, index);
     if (now >= start && now <= close) return index;

@@ -122,6 +122,9 @@ to keep/preserve the escrowed funds).
   ACTIVE/FUNDED/RESOLVED/APPEALED; `s12` is the green FINALIZED browser run).
   `frontend/.env.local` (ignored)
   points at it.
+- Live frontend: `https://getobserva.vercel.app/` (contract reads work; 12/12
+  records). `https://observa.vercel.app/` is a different, disabled deployment
+  (`403 DEPLOYMENT_DISABLED`), not the live app.
 - First line of the contract pins the runner `1jb45…` (the network rejects
   `test`/`latest`; genvm-lint notes a newer runner but the family stays on `1jb45…`
   for consistency).
@@ -312,7 +315,7 @@ Status legend: [x] done · [~] in progress · [ ] planned · [ ]? open question.
 - [x] Coverage-floor and payout-delivery UI: authoritative-evidence badge, thin
   coverage as inconclusive, payout ledger with `owed`/`sent`/`delivered`, retry,
   recover, confirm and pump actions.
-- [x] Tests: `frontendSync.ts` (55 offline checks) + `frontendIntegration.ts`
+- [x] Tests: `frontendSync.ts` (58 offline checks) + `frontendIntegration.ts`
   (read-only, `--write`, and `--full`) + `frontendE2E.ts` (20 browser checks).
 
 ### Phase 4 — Protocol depth (IN PROGRESS)
@@ -360,6 +363,18 @@ Status legend: [x] done · [~] in progress · [ ] planned · [ ]? open question.
 ## 7. Activity log
 Newest first. One entry per work session: date, what was done, evidence (commands +
 results). Keep it short but concrete.
+
+- **2026-10-22 — Multi-slot probe UI fix (frontend audit).**
+  - Found `nextProbeSlot` only considered `base` and `base - 1`, so after a 3-slot
+    window closed it exposed only the last slot. Earlier slots still inside their
+    five-minute grace were unreachable from the UI, which stranded a 3-slot demo
+    below the coverage floor.
+  - It now scans every slot and returns the oldest unprobed one that is still
+    inside its probe window, so a keeper can backfill all grace slots.
+  - Added sync checks for the oldest-open, post-window grace, skip-probed, and
+    all-grace-expired cases. Evidence: `npm run test:sync` -> **58 passed**;
+    frontend `lint` clean; `next build` green.
+  - Next: rerun the live/E2E path after deploy; the existing E2E still uses one slot.
 
 - **2026-10-21 — Browser read pacing (429 console noise).**
   - Added a browser-only 24/min read budget with a shared 429 cooldown, so a
@@ -594,7 +609,7 @@ results). Keep it short but concrete.
   created `s1`/`s2` and printed `MET`, refund, payout rows and invariants;
   `node deploy/verifyScript.ts` fresh-deployed `0xC14ab3…38af` and passed
   **26/26**, including delivered refund, provider and bond rows.
-- Frontend contract tests (2026-10-21): `npm run test:sync` -> **55 passed**;
+- Frontend contract tests: `npm run test:sync` -> **58 passed** (2026-10-22);
   `test:frontend` -> **18 passed**; `test:frontend:write` -> **22 passed**;
   `test:frontend:full` -> **42 passed** (new deal `s3`, full escrow/appeal path).
 - Browser E2E (2026-10-21): `npm run test:frontend:e2e` -> **20 passed, 0 failed**
